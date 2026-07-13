@@ -1,0 +1,9 @@
+# This role is invoked with `tasks_from:` (cluster-init.yml or join.yml) by
+# playbooks/site.yml, not via this main.yml — see that playbook for why
+# (embedded-etcd bootstrap needs a specific first node, not just "run on
+# every host").
+- name: (unused entrypoint — see playbooks/site.yml)
+  ansible.builtin.debug:
+    msg: >-
+      This role is meant to be invoked with tasks_from: cluster-init.yml or
+      tasks_from: join.yml — see playbooks/site.yml.

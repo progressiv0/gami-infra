@@ -1,0 +1,40 @@
+---
+# Bootstraps embedded etcd on the FIRST node only. Idempotent: the k3s
+# install script checks for an existing /usr/local/bin/k3s and an active
+# k3s.service before doing anything, so re-running this is a no-op once the
+# node is already part of a cluster.
+- name: Check whether k3s is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: Download and run the k3s install script (cluster-init)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION={{ k3s_version }} \
+      INSTALL_K3S_EXEC="server --cluster-init --disable={{ k3s_disable | join(',') }}" \
+      sh -
+  args:
+    executable: /bin/bash
+  when: not k3s_binary.stat.exists
+
+- name: Wait for k3s to report Ready
+  ansible.builtin.command: k3s kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: k3s_ready
+  until: k3s_ready.stdout == "True"
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Fetch the node token (needed by the other 2 nodes to join)
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: k3s_node_token_raw
+
+- name: Expose the token as a fact for other plays in this run
+  ansible.builtin.set_fact:
+    k3s_node_token: "{{ k3s_node_token_raw.content | b64decode | trim }}"
+  # cacheable so `join.yml` (a separate play against different hosts) can
+  # read it via hostvars[bootstrap_node].k3s_node_token.
+  cacheable: true

@@ -1,0 +1,22 @@
+# Requires metrics-server in the cluster (not installed by this plan by
+# default — k3s doesn't bundle it). Install it alongside Longhorn/ArgoCD/CNPG
+# in Rollout Order step 6 if autoscaling is actually wanted; otherwise this
+# HPA simply won't have metrics to scale on and gami-api stays at minReplicas.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gami-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gami-api
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

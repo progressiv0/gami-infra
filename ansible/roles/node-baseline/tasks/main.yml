@@ -1,0 +1,62 @@
+---
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install unattended-upgrades
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+
+- name: Enable automatic security updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    mode: "0644"
+
+- name: Create non-root ops user
+  ansible.builtin.user:
+    name: ops
+    groups: sudo
+    shell: /bin/bash
+    create_home: true
+
+- name: Install the ops SSH key (same one Terraform put on root)
+  ansible.builtin.authorized_key:
+    user: ops
+    key: "{{ lookup('file', ssh_public_key_path) }}"
+  when: ssh_public_key_path is defined
+
+- name: Allow passwordless sudo for ops
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/ops
+    content: "ops ALL=(ALL) NOPASSWD:ALL\n"
+    mode: "0440"
+    validate: "visudo -cf %s"
+
+- name: Install ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+# Hetzner's cloud firewall (terraform/main.tf) is the primary boundary — this
+# is defense in depth, not the only layer, and deliberately mirrors those
+# same rules rather than introducing a second, divergent source of truth.
+- name: Configure host firewall (ufw) — mirrors the Hetzner cloud firewall
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "22"
+    - "80"
+    - "443"
+    - "6443"
+
+- name: Enable ufw
+  community.general.ufw:
+    state: enabled
+    policy: deny

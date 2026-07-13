@@ -1,0 +1,17 @@
+# Dynamic inventory (community.hcloud.hcloud plugin) — sourced live from the
+# Hetzner API, so there's no IP list to hand-maintain as Terraform
+# creates/replaces nodes. Requires: `ansible-galaxy collection install
+# hetzner.hcloud` and HCLOUD_TOKEN in the environment.
+plugin: hetzner.hcloud.hcloud
+
+# Matches the `role = "k3s-server"` label Terraform sets on every node
+# (terraform/main.tf) — groups all 3 nodes under [k3s_server] regardless of
+# name/IP churn.
+label_selector: role=k3s-server
+
+group_by_label: true
+
+# Nodes only have a public IP + a private network IP (terraform/main.tf's
+# hcloud_network attachment) — use the private one for all playbook
+# connections, keeping cluster/SSH traffic off the public interface.
+connect_with: private_ipv4

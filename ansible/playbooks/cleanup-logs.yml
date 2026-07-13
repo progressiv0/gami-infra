@@ -1,0 +1,31 @@
+# Runs two ways per the plan (Phase 6): by hand
+# (`ansible-playbook playbooks/cleanup-logs.yml`) and via the portal's
+# /admin/ops page dispatching a GitHub Actions workflow that runs this same
+# command over SSH — both paths must behave identically, so this file is the
+# single source of truth for what "log cleanup" means.
+- name: Clean up logs and reclaim disk space
+  hosts: k3s_server
+  become: true
+  tasks:
+    - name: Vacuum journald logs older than 7 days
+      ansible.builtin.command: journalctl --vacuum-time=7d
+      changed_when: true
+
+    - name: Prune unused containerd images
+      ansible.builtin.command: k3s crictl rmi --prune
+      changed_when: true
+      failed_when: false # no-op (rc=1) when there's nothing to prune
+
+    - name: Find Traefik/CNPG pod logs older than 14 days under /var/log
+      ansible.builtin.find:
+        paths: /var/log/pods
+        age: 14d
+        recurse: true
+        patterns: "*.log"
+      register: old_pod_logs
+
+    - name: Remove them
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_pod_logs.files }}"

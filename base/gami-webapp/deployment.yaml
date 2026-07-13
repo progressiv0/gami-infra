@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gami-webapp
+  labels:
+    app: gami-webapp
+spec:
+  # Single replica: src/instrumentation.ts runs an in-process hourly
+  # OTS-upgrade sweep scheduler with no leader election, and GPR_STORE_DIR
+  # below is an emptyDir (pod-local, not shared). Scaling past 1 needs either
+  # a leader-election guard (or move the sweep to a k8s CronJob instead) and
+  # a shared GPR store (NFS/Longhorn RWX) — neither exists yet, so don't bump
+  # replicas here without addressing both.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gami-webapp
+  template:
+    metadata:
+      labels:
+        app: gami-webapp
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: gami-webapp
+          # Tag set per-overlay via `kustomize edit set image` (release.yml).
+          image: ghcr.io/authenticmemory/gami-webapp
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: gami-config
+          env:
+            - name: GPR_STORE_DIR
+              value: /app/gpr-store
+            # CNPG auto-generates this Secret for the `gami-postgres` Cluster
+            # (postgres-cluster.yaml) — verify the exact key name (`uri`)
+            # against your installed CNPG version; older versions may only
+            # expose host/user/password/dbname as separate keys instead of a
+            # combined connection string.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: gami-postgres-app
+                  key: uri
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gami-secrets
+                  key: NEXTAUTH_SECRET
+            - name: GAMI_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gami-secrets
+                  key: GAMI_API_TOKEN
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: gami-smtp
+                  key: SMTP_USER
+                  optional: true
+            - name: SMTP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: gami-smtp
+                  key: SMTP_PASS
+                  optional: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: gpr-store
+              mountPath: /app/gpr-store
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /api/public/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /api/public/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        # NOT a k8s PV — matches the plan's acknowledged gap: GPR files live
+        # on pod-local storage, lost if this pod is deleted/rescheduled.
+        # Replication/durability for this is explicitly out of scope for now.
+        - name: gpr-store
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

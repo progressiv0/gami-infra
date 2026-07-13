@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gami-api
+  labels:
+    app: gami-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gami-api
+  template:
+    metadata:
+      labels:
+        app: gami-api
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: gami-api
+          # Tag set per-overlay via `kustomize edit set image` (release.yml).
+          image: ghcr.io/authenticmemory/gami-api
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: gami-config
+          env:
+            - name: PORT
+              value: "8080"
+            - name: GAMI_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gami-secrets
+                  key: GAMI_JWT_SECRET
+            # Institution signing key — only present once an operator seals it
+            # (see Phase 3a). Missing key material just means /v1/sign and
+            # /v1/anchor return 503, same as local dev without GAMI_PRIVATE_KEY.
+            - name: GAMI_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: gami-signing-key
+                  key: GAMI_KEY_ID
+                  optional: true
+            - name: GAMI_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gami-signing-key
+                  key: GAMI_PRIVATE_KEY
+                  optional: true
+            - name: GAMI_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gami-signing-key
+                  key: GAMI_PUBLIC_KEY
+                  optional: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # gami-api never writes to disk (stateless, no exec.Command) —
+            # this is precautionary hardening alongside readOnlyRootFilesystem,
+            # not something the app is known to need.
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}

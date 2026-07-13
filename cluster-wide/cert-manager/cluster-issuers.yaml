@@ -1,0 +1,36 @@
+# Two Let's Encrypt environments here, not to be confused with our own
+# staging/production overlays: "letsencrypt-staging" issues untrusted-but-
+# functional test certs against LE's low-rate-limit staging ACME server (use
+# this while iterating on Ingress config so you don't burn LE's production
+# rate limits); "letsencrypt-production" issues real, browser-trusted certs.
+# Our staging *overlay* references letsencrypt-staging; our production
+# *overlay* references letsencrypt-production.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: tech@authenticmemory.org
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-production
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: tech@authenticmemory.org
+    privateKeySecretRef:
+      name: letsencrypt-production-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik

@@ -1,0 +1,9 @@
+k3s_version: v1.31.4+k3s1
+
+# k3s server flags — disabled components we deliberately replace ourselves:
+# servicelb (not needed, Traefik handles ingress directly on the host
+# network) and the bundled local-path storage provisioner (Longhorn is the
+# real storage class this plan uses, see Phase 4).
+k3s_disable:
+  - servicelb
+  - local-storage

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gami-webapp
+  labels:
+    app: gami-webapp
+spec:
+  selector:
+    app: gami-webapp
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

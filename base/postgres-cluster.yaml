@@ -1,0 +1,28 @@
+# Requires the CloudNativePG operator installed in the cluster (Rollout Order
+# step 6) — this Cluster resource is what it watches to actually provision
+# Postgres, it's not a plain StatefulSet.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: gami-postgres
+spec:
+  instances: 3                  # one per node, matches the 3-node cluster
+  affinity:
+    topologyKey: kubernetes.io/hostname   # one instance per node, never doubled up
+  storage:
+    storageClass: longhorn
+    size: 10Gi
+  bootstrap:
+    initdb:
+      database: gami
+      owner: gami
+      # CNPG auto-generates the `gami` user's password and publishes a Secret
+      # named `gami-postgres-app` (the `-app` suffix is a CNPG convention),
+      # which gami-webapp/gami-migrate reference via secretKeyRef (key: uri).
+      # Verify the exact key name against your installed CNPG version — this
+      # hasn't been tested against a real cluster yet.
+  postgresql:
+    pg_hba:
+      - host gami gami 10.0.0.0/8 scram-sha-256
+  backup:
+    retentionPolicy: "7d"

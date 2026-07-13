@@ -1,0 +1,58 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - sealed-secrets
+
+# base/ already reflects production's hostnames (app.authenticmemory.org /
+# verify.authenticmemory.org) and cert-manager issuer (letsencrypt-production)
+# as its defaults, so no Ingress patch is needed here — only staging patches
+# away from those defaults.
+
+# disableNameSuffixHash: envFrom.configMapRef.name references below don't get
+# auto-rewritten to a hash-suffixed name by this kustomize version (verified
+# with `kubectl kustomize` — the ConfigMap got suffixed but the Deployments'
+# envFrom didn't follow, which 404s at apply time). Trade-off: pods don't
+# auto-restart when gami-config's content changes — same manual-restart
+# caveat Phase 3a already calls out for Secret rotation.
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: gami-config
+    literals:
+      - NODE_ENV=production
+      - CORS_ALLOWED_ORIGIN=https://app.authenticmemory.org
+      - APP_BASE_URL=https://app.authenticmemory.org
+      - GAMI_API_URL=http://gami-api:8080
+      - NEXTAUTH_URL=https://app.authenticmemory.org
+      - SECURE_COOKIES=true
+      - AUTH_TRUST_HOST=true
+      # SMTP_* / BOOTSTRAP_OPERATOR_EMAIL: placeholders — set real values
+      # before the first real deploy.
+      - SMTP_HOST=smtp.example.com
+      - SMTP_PORT=587
+      - SMTP_SECURE=false
+      - SMTP_FROM=noreply@authenticmemory.org
+      - SMTP_FROM_NAME=Authentic Memory
+      - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
+
+# Tags here are placeholders — release.yml's `kustomize edit set image`
+# rewrites all three on every published Release. gami-webapp-migrate is a
+# symbolic name (see base/gami-migrate-job.yaml) mapped onto the real
+# gami-webapp repo with a -migrate tag suffix.
+images:
+  - name: ghcr.io/authenticmemory/gami-api
+    newTag: latest
+  - name: ghcr.io/authenticmemory/gami-webapp
+    newTag: latest
+  - name: ghcr.io/authenticmemory/gami-webapp-migrate
+    newName: ghcr.io/authenticmemory/gami-webapp
+    newTag: latest-migrate
+
+replicas:
+  - name: gami-api
+    count: 2
+  - name: gami-webapp
+    count: 1

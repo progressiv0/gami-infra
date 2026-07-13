@@ -1,0 +1,39 @@
+# Hostnames here are the production defaults — the staging overlay patches
+# spec.rules[].host and spec.tls[0].hosts to its own subdomains (see
+# overlays/staging/kustomization.yaml). The portal/verifier split (which
+# hostname shows which UI) is entirely the app's own src/middleware.ts host
+# check — both rules point at the same gami-webapp Service.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gami-webapp
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - app.authenticmemory.org
+        - verify.authenticmemory.org
+      secretName: gami-webapp-tls
+  rules:
+    - host: app.authenticmemory.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gami-webapp
+                port:
+                  number: 3000
+    - host: verify.authenticmemory.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gami-webapp
+                port:
+                  number: 3000

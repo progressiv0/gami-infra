@@ -1,0 +1,52 @@
+# ArgoCD PreSync hook — runs to completion before gami-api/gami-webapp roll,
+# exactly mirroring docker-compose.yml's gami-migrate service locally.
+# hook-delete-policy: BeforeHookCreation keeps one Job around for inspection
+# until the *next* sync creates a new one (rather than deleting immediately
+# after success, which makes debugging a failed migration harder).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gami-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: gami-migrate
+          # Symbolic name — rewritten by `kustomize edit set image` to the
+          # real `gami-webapp:TAG-migrate` tag (the `builder` stage, which has
+          # npm/drizzle-kit/tsx; the distroless runner doesn't). See
+          # gami-app's release.yml.
+          image: ghcr.io/authenticmemory/gami-webapp-migrate
+          command: ["npm", "run", "db:setup"]
+          envFrom:
+            - configMapRef:
+                name: gami-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: gami-postgres-app
+                  key: uri
+          securityContext:
+            runAsNonRoot: true
+            # 1000 = the `node` user baked into node:22-alpine3.21 (the
+            # builder stage's base image) — gami-webapp/Dockerfile switches
+            # to it before WORKDIR so /app is actually writable by this uid,
+            # verified empirically (this failed with EACCES before that fix).
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi

@@ -1,0 +1,104 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Overrides base's `namespace: gami` — staging and production share one
+# cluster (3-node k3s), so they need separate namespaces or resource names
+# (gami-api, gami-webapp, ...) would collide.
+namespace: gami-staging
+
+resources:
+  - ../../base
+  - sealed-secrets
+
+# See overlays/production/kustomization.yaml for why this is disabled.
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: gami-config
+    literals:
+      - NODE_ENV=production
+      - CORS_ALLOWED_ORIGIN=https://staging.authenticmemory.org
+      - APP_BASE_URL=https://staging.authenticmemory.org
+      - GAMI_API_URL=http://gami-api:8080
+      - NEXTAUTH_URL=https://staging.authenticmemory.org
+      - SECURE_COOKIES=true
+      - AUTH_TRUST_HOST=true
+      - SMTP_HOST=smtp.example.com
+      - SMTP_PORT=587
+      - SMTP_SECURE=false
+      - SMTP_FROM=noreply@authenticmemory.org
+      - SMTP_FROM_NAME=Authentic Memory (staging)
+      - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
+
+images:
+  - name: ghcr.io/authenticmemory/gami-api
+    newTag: latest
+  - name: ghcr.io/authenticmemory/gami-webapp
+    newTag: latest
+  - name: ghcr.io/authenticmemory/gami-webapp-migrate
+    newName: ghcr.io/authenticmemory/gami-webapp
+    newTag: latest-migrate
+
+replicas:
+  - name: gami-api
+    count: 1
+  - name: gami-webapp
+    count: 1
+
+# Staging gets its own hostnames and the Let's Encrypt STAGING ACME endpoint
+# (untrusted-but-functional certs — avoids burning production's rate limits
+# while iterating). See base/cert-manager/cluster-issuers.yaml for both
+# ClusterIssuers.
+patches:
+  # Without this, the HPA's minReplicas: 2 (inherited from base) would just
+  # scale gami-api back up to 2 the moment metrics-server reports anything —
+  # silently overriding the `replicas: gami-api count: 1` above.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: gami-api
+    patch: |
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: gami-api
+      spec:
+        minReplicas: 1
+        maxReplicas: 2
+  - target:
+      kind: Ingress
+      name: gami-webapp
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: gami-webapp
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-staging
+      spec:
+        tls:
+          - hosts:
+              - staging.authenticmemory.org
+              - verify-staging.authenticmemory.org
+            secretName: gami-webapp-tls
+        rules:
+          - host: staging.authenticmemory.org
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: gami-webapp
+                      port:
+                        number: 3000
+          - host: verify-staging.authenticmemory.org
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: gami-webapp
+                      port:
+                        number: 3000

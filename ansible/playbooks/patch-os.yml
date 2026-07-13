@@ -1,0 +1,33 @@
+# On-demand OS patching, rolling one node at a time — never all 3 at once,
+# which would risk losing etcd quorum mid-patch if a reboot takes a node
+# down while another is already out for maintenance.
+- name: Patch OS packages and reboot if needed (one node at a time)
+  hosts: k3s_server
+  become: true
+  serial: 1
+  tasks:
+    - name: Update apt cache and upgrade packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: safe
+      register: apt_upgrade
+
+    - name: Check if a reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Drain this node before rebooting
+      ansible.builtin.command: k3s kubectl drain {{ inventory_hostname }} --ignore-daemonsets --delete-emptydir-data --timeout=120s
+      delegate_to: "{{ groups['k3s_server'] | difference([inventory_hostname]) | first }}"
+      when: reboot_required.stat.exists
+
+    - name: Reboot
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+      when: reboot_required.stat.exists
+
+    - name: Uncordon this node
+      ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
+      delegate_to: "{{ groups['k3s_server'] | difference([inventory_hostname]) | first }}"
+      when: reboot_required.stat.exists

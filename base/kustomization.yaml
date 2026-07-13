@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gami
+
+resources:
+  - gami-api/deployment.yaml
+  - gami-api/service.yaml
+  - gami-api/hpa.yaml
+  - gami-webapp/deployment.yaml
+  - gami-webapp/service.yaml
+  - gami-webapp/ingress.yaml
+  - gami-migrate-job.yaml
+  - postgres-cluster.yaml
+
+# ClusterIssuers are NOT here — they're cluster-scoped, and this
+# kustomization sets `namespace:` above, which `kubectl kustomize` was
+# verified to (incorrectly) stamp onto them too. Worse, both overlays would
+# then fight over owning the same cluster-scoped resource name. They live in
+# ../cluster-wide instead, applied once, shared by both environments.
+
+# No configMapGenerator or SealedSecrets here — gami-config and the sealed
+# secrets are genuinely per-environment (different hostnames, independently-
+# generated secret values), owned entirely by each overlay. See
+# overlays/{staging,production}/kustomization.yaml and Phase 3a of the plan.
+#
+# ghcr-pull-secret is also deliberately absent — see README-image-pull-secret.md.

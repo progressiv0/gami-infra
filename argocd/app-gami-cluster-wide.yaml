@@ -1,0 +1,22 @@
+# Cluster-scoped shared resources (currently: the two cert-manager
+# ClusterIssuers) — synced once, independent of and before the staging/
+# production Applications. destination.namespace is irrelevant for
+# cluster-scoped resources but required by the Application schema.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gami-cluster-wide
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/progressiv0/gami-infra
+    targetRevision: main
+    path: cluster-wide
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
