@@ -70,16 +70,12 @@ replicas:
 # all 3 onto the big prod node alone — so losing any single node, including
 # the dedicated prod node, still leaves 2 of 3 replicas serving.
 patches:
-  # gami-migrate-job.yaml (base/) is an ArgoCD PreSync hook that reads this
-  # ConfigMap via envFrom. sync-wave alone does NOT help here — PreSync is a
-  # separate PHASE that runs entirely before the normal Sync phase, and
-  # sync-wave only orders resources within the same phase; a Sync-phase
-  # resource can never "jump ahead" of PreSync no matter its wave number
-  # (confirmed against a real cluster: ArgoCD's own sync task list showed
-  # only the Job attempted, gami-config not even queued yet, causing
-  # "configmap gami-config not found" every time). The fix is making this
-  # ConfigMap a PreSync hook too — same phase as the Job — ordered before it
-  # via sync-wave -1 (the Job itself defaults to wave 0).
+  # gami-migrate-job.yaml (base/, sync-wave 0) reads this ConfigMap via
+  # envFrom, so it needs to exist first — wave -1 guarantees that within
+  # ArgoCD's normal Sync phase (see base/gami-migrate-job.yaml's comment for
+  # why this is plain sync-wave ordering, not a PreSync hook: hooks run in a
+  # separate phase that completes before ANY Sync-phase resource, including
+  # this ConfigMap, is even attempted — confirmed against a real cluster).
   - target:
       kind: ConfigMap
       name: gami-config
@@ -89,8 +85,11 @@ patches:
       metadata:
         name: gami-config
         annotations:
-          argocd.argoproj.io/hook: PreSync
           argocd.argoproj.io/sync-wave: "-1"
+  # sync-wave 1: ArgoCD waits for wave 0 (gami-migrate-job.yaml's Job) to
+  # report Healthy — which for a Job means Completed — before starting this
+  # wave. This is what actually blocks the webapp rollout until migration
+  # succeeds, replacing the PreSync-hook mechanism this used to rely on.
   - target:
       kind: Deployment
       name: gami-webapp
@@ -99,6 +98,8 @@ patches:
       kind: Deployment
       metadata:
         name: gami-webapp
+        annotations:
+          argocd.argoproj.io/sync-wave: "1"
       spec:
         template:
           spec:

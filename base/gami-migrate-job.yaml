@@ -1,15 +1,33 @@
-# ArgoCD PreSync hook — runs to completion before gami-webapp rolls out,
-# exactly mirroring docker-compose.yml's gami-migrate service locally.
-# hook-delete-policy: BeforeHookCreation keeps one Job around for inspection
-# until the *next* sync creates a new one (rather than deleting immediately
-# after success, which makes debugging a failed migration harder).
+# Ordered via sync-wave, not an ArgoCD PreSync hook — PreSync hooks run in a
+# phase that completes entirely before ANY Sync-phase resource is even
+# attempted, including gami-config (also a plain Sync-phase resource this
+# Job needs via envFrom), so a Job hook can never see that ConfigMap on a
+# fresh namespace sync (confirmed against a real cluster: making gami-config
+# a hook too didn't help either — its sync-wave was correctly rendered in
+# the manifest, but ArgoCD's controller never classified it as a hook task,
+# despite gitops-engine's IsHook() being purely annotation-based with no
+# kind restriction — root cause undetermined, not worth more time chasing).
+# Plain sync-wave ordering between ordinary resources is simpler and
+# reliably documented ArgoCD behavior: gami-config (wave -1) → this Job
+# (wave 0, this file) → gami-webapp's Deployment (wave 1, patched per
+# overlay) — see overlays/*/kustomization.yaml.
+#
+# Without the PreSync hook, Replace=true (in each overlay's syncOptions) is
+# what makes repeated syncs of this fixed-name Job idempotent — Jobs are
+# immutable, so a plain `kubectl apply` on an already-completed
+# `gami-migrate` fails; `kubectl replace --force` (what Replace=true drives)
+# deletes and recreates it instead, mirroring the hook-delete-policy this
+# used to rely on.
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: gami-migrate
   annotations:
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "0"
+    # Per-resource, not Application-wide: only this Job needs delete+recreate
+    # semantics (Jobs are immutable) — Replace=true elsewhere would be
+    # unnecessary and riskier (e.g. on the CNPG Cluster or Deployments).
+    argocd.argoproj.io/sync-options: Replace=true
 spec:
   backoffLimit: 3
   template:
