@@ -70,6 +70,22 @@ replicas:
 # all 3 onto the big prod node alone — so losing any single node, including
 # the dedicated prod node, still leaves 2 of 3 replicas serving.
 patches:
+  # gami-migrate-job.yaml (base/) is an ArgoCD PreSync hook that reads this
+  # ConfigMap via envFrom — PreSync hooks run BEFORE ArgoCD applies ordinary
+  # resources (this ConfigMap included), so without an earlier sync-wave the
+  # Job fails with "configmap gami-config not found" on a fresh namespace
+  # sync (confirmed against a real cluster, not theoretical). Wave -1
+  # guarantees this exists before wave 0's PreSync hook fires.
+  - target:
+      kind: ConfigMap
+      name: gami-config
+    patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: gami-config
+        annotations:
+          argocd.argoproj.io/sync-wave: "-1"
   - target:
       kind: Deployment
       name: gami-webapp

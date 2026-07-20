@@ -46,6 +46,22 @@ replicas:
 # same untrusted-but-functional-certs reasoning as the staging overlay, dev
 # doesn't need real browser-trusted certs either.
 patches:
+  # gami-migrate-job.yaml (base/) is an ArgoCD PreSync hook that reads this
+  # ConfigMap via envFrom — PreSync hooks run BEFORE ArgoCD applies ordinary
+  # resources (this ConfigMap included), so without an earlier sync-wave the
+  # Job fails with "configmap gami-config not found" on a fresh namespace
+  # sync (confirmed against a real cluster, not theoretical). Wave -1
+  # guarantees this exists before wave 0's PreSync hook fires.
+  - target:
+      kind: ConfigMap
+      name: gami-config
+    patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: gami-config
+        annotations:
+          argocd.argoproj.io/sync-wave: "-1"
   - target:
       kind: Ingress
       name: gami-webapp
