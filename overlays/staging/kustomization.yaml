@@ -48,11 +48,15 @@ replicas:
 # both ClusterIssuers.
 patches:
   # gami-migrate-job.yaml (base/) is an ArgoCD PreSync hook that reads this
-  # ConfigMap via envFrom — PreSync hooks run BEFORE ArgoCD applies ordinary
-  # resources (this ConfigMap included), so without an earlier sync-wave the
-  # Job fails with "configmap gami-config not found" on a fresh namespace
-  # sync (confirmed against a real cluster, not theoretical). Wave -1
-  # guarantees this exists before wave 0's PreSync hook fires.
+  # ConfigMap via envFrom. sync-wave alone does NOT help here — PreSync is a
+  # separate PHASE that runs entirely before the normal Sync phase, and
+  # sync-wave only orders resources within the same phase; a Sync-phase
+  # resource can never "jump ahead" of PreSync no matter its wave number
+  # (confirmed against a real cluster: ArgoCD's own sync task list showed
+  # only the Job attempted, gami-config not even queued yet, causing
+  # "configmap gami-config not found" every time). The fix is making this
+  # ConfigMap a PreSync hook too — same phase as the Job — ordered before it
+  # via sync-wave -1 (the Job itself defaults to wave 0).
   - target:
       kind: ConfigMap
       name: gami-config
@@ -62,6 +66,7 @@ patches:
       metadata:
         name: gami-config
         annotations:
+          argocd.argoproj.io/hook: PreSync
           argocd.argoproj.io/sync-wave: "-1"
   - target:
       kind: Ingress
