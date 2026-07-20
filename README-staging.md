@@ -142,23 +142,24 @@ Let's Encrypt cert (an `Ingress`/`IngressRoute` with
 `cert-manager.io/cluster-issuer: letsencrypt-production`) rather than relying
 on the raw NodePort long-term.
 
-### 4. Cluster operators (cert-manager, CNPG) — automatic, just confirm they came up
+### 4. Cluster operators (cert-manager, CNPG, Longhorn) — automatic, just confirm they came up
 
-Unlike an earlier version of this repo, **cert-manager and the CloudNativePG
-operator are no longer a manual install step** — `argocd/app-cluster-operators.yaml`
-(an App-of-Apps parent, see [README.md](README.md)'s `cluster-operators/`
-section) applies them automatically as soon as ArgoCD itself exists, since
-`site.yml`'s `argocd` role applies every file in `argocd/` including this
-one. Just confirm they actually came up before moving on — if the underlying
-`kubectl apply -f argocd/` step in `site.yml` ran, these should already be
-`Synced`/`Healthy`:
+Unlike an earlier version of this repo, **cert-manager, the CloudNativePG
+operator, and Longhorn are no longer a manual install step** —
+`argocd/app-cluster-operators.yaml` (an App-of-Apps parent, see
+[README.md](README.md)'s `cluster-operators/` section) applies them
+automatically as soon as ArgoCD itself exists, since `site.yml`'s `argocd`
+role applies every file in `argocd/` including this one. Just confirm they
+actually came up before moving on — if the underlying `kubectl apply -f
+argocd/` step in `site.yml` ran, these should already be `Synced`/`Healthy`:
 
 ```bash
 kubectl get application cluster-operators -n argocd
-kubectl get application -n argocd -l argocd.argoproj.io/instance=cluster-operators 2>/dev/null
 # or, since the children aren't labeled that way by default, just:
 kubectl get pods -n cert-manager
 kubectl get pods -n cnpg-system
+kubectl get pods -n longhorn-system
+kubectl get storageclass longhorn
 ```
 
 If they're not there yet, ArgoCD may not have gotten to its first sync —
@@ -168,12 +169,17 @@ kubectl patch application cluster-operators -n argocd --type merge \
   -p '{"operation":{"sync":{"revision":"HEAD"},"initiatedBy":{"username":"admin"}}}'
 ```
 
-**Two things this repo still doesn't automate** — install these separately,
-the same manual way as before:
-- **Longhorn** — the storage class every `postgres-cluster.yaml` requests.
-- **Sealed Secrets controller** (bitnami-labs) — needed before any
-  `SealedSecret` in `overlays/*/sealed-secrets/` can be decrypted into a real
-  `Secret`.
+**Longhorn needs `open-iscsi` + a running `iscsid` service on every node**
+before its PVCs can actually bind — `ansible/roles/node-baseline/tasks/main.yml`
+installs this, so it should already be true if `site.yml` ran the full
+`node-baseline` role. If a Postgres PVC sits `Pending` with `unbound
+immediate PersistentVolumeClaims`, check `systemctl status iscsid` on each
+node before assuming it's a Longhorn manifest problem.
+
+**One thing this repo still doesn't automate**: the **Sealed Secrets
+controller** (bitnami-labs) — needed before any `SealedSecret` in
+`overlays/*/sealed-secrets/` can be decrypted into a real `Secret`. Install
+this separately, the same manual way as before.
 
 Traefik does **not** need separate installation — k3s bundles it (that's why
 `k3s_disable` in `ansible/roles/k3s-server/defaults/main.yml` disables

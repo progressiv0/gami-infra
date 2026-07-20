@@ -376,19 +376,23 @@ For genuinely local app testing, either:
 Either way, remember the app itself needs:
 - `ghcr-pull-secret` created manually (see
   `base/README-image-pull-secret.md`) — nothing pulls without it.
-- **cert-manager and the CloudNativePG operator** — if `argocd/`'s manifests
-  were applied (either via the `argocd` role or by hand), these install
-  themselves automatically through `argocd/app-cluster-operators.yaml` (see
-  [README.md](README.md)'s `cluster-operators/` section) — no separate step
-  needed. If you skipped ArgoCD entirely and only ran `kubectl apply -k
-  overlays/...` directly, you'll need to apply
-  `cluster-operators/cert-manager` and `cluster-operators/cnpg` yourself the
+- **cert-manager, the CloudNativePG operator, and Longhorn** — if
+  `argocd/`'s manifests were applied (either via the `argocd` role or by
+  hand), these install themselves automatically through
+  `argocd/app-cluster-operators.yaml` (see [README.md](README.md)'s
+  `cluster-operators/` section) — no separate step needed. If you skipped
+  ArgoCD entirely and only ran `kubectl apply -k overlays/...` directly,
+  you'll need to apply `cluster-operators/cert-manager`,
+  `cluster-operators/cnpg`, and `cluster-operators/longhorn` yourself the
   same way (`kubectl apply -k cluster-operators/cnpg --server-side` — CNPG's
-  CRDs are too large for client-side apply, see that Kustomization's own
-  comment).
-- **Longhorn** — still not automated by anything in this repo, install
-  separately. Each overlay's `postgres-cluster.yaml` requests the `longhorn`
-  storage class.
+  and Longhorn's CRDs are too large for client-side apply, see those
+  Kustomizations' own comments).
+- **Longhorn also needs `open-iscsi` + a running `iscsid` service on every
+  node** — a real host-level dependency no manifest can satisfy. On a local
+  VM this means installing it yourself to match `ansible/roles/node-baseline/tasks/main.yml`
+  (`apt install open-iscsi && systemctl enable --now iscsid` on
+  Debian/Ubuntu; adjust for other distros). Without this, Longhorn's
+  manifest applies cleanly but PVCs sit unbound forever.
 - **The CNPG Barman Cloud plugin** — only relevant if testing production's
   S3 backup locally; also GitOps-managed (`cluster-operators/cnpg-barman-plugin/`),
   applied automatically alongside cert-manager/CNPG. See

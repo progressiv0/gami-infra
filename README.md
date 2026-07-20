@@ -217,7 +217,7 @@ Both overlays start here and layer environment-specific values on top.
 | `gami-webapp/deployment.yaml` | `gami-webapp` Deployment — the whole app (no separate backend service, see the note above). Distroless (`gcr.io/distroless/nodejs22-debian13`), non-root (uid 65532), `readOnlyRootFilesystem`. `/api/public/health` liveness+readiness (pings Postgres — a real readiness signal, not a bare 200). Base default is `replicas: 1`; each overlay sets its own count (see the overlay table below) |
 | `gami-webapp/service.yaml` | ClusterIP |
 | `gami-webapp/ingress.yaml` | Traefik `Ingress`, two `Host` rules (`app.<domain>`, `verify.<domain>`) both routing to the same Service — the portal/verifier split happens in the app's own `src/middleware.ts`, not at the ingress layer |
-| `gami-migrate-job.yaml` | A `batch/v1` Job run as an ArgoCD **PreSync hook** — runs `npm run db:setup` against the `-migrate` image tag (the builder stage, which still has npm/drizzle-kit/tsx; the distroless runtime image doesn't) and must complete before `gami-webapp` rolls out on every sync |
+| `gami-migrate-job.yaml` | A `batch/v1` Job — runs `npm run db:setup` against the `-migrate` image tag (the builder stage, which still has npm/drizzle-kit/tsx; the distroless runtime image doesn't). Ordered via `argocd.argoproj.io/sync-wave` (`-1`: `gami-config` → `0`: this Job → `1`: `gami-webapp`'s Deployment, patched per overlay), **not** a PreSync hook — an earlier PreSync-hook version of this Job could never see `gami-config` (hooks run in a phase that completes entirely before any Sync-phase resource, including that ConfigMap, is even attempted). `argocd.argoproj.io/sync-options: Replace=true` on the Job makes repeated syncs of this fixed name idempotent (Jobs are immutable, so plain re-apply fails once one has run) |
 | `kustomization.yaml` | Ties the above together under `namespace: gami` (overridden per-overlay). Deliberately has **no** `configMapGenerator`, SealedSecrets, cert-manager, or Postgres resources — those are genuinely per-environment, added by each overlay (Postgres specifically: see "Node topology" above for why it's not one shared `base/postgres-cluster.yaml` anymore) |
 | `README-image-pull-secret.md` | Explains why there's no `ghcr-pull-secret` manifest here: a real registry credential shouldn't be committed even sealed. Created once per cluster with a plain `kubectl create secret docker-registry` command instead |
 
@@ -264,8 +264,10 @@ its own ArgoCD Application.
 
 Third-party Kubernetes operators the app manifests depend on — cert-manager
 (for `ClusterIssuer`/`Certificate`), the CloudNativePG operator (for the
-`Cluster` CRD every `overlays/*/postgres-cluster.yaml` uses), and the CNPG
-Barman Cloud plugin (production's S3 backup — see `overlays/production/README-backup.md`).
+`Cluster` CRD every `overlays/*/postgres-cluster.yaml` uses), the CNPG
+Barman Cloud plugin (production's S3 backup — see `overlays/production/README-backup.md`),
+and Longhorn (the `longhorn` storage class every `postgres-cluster.yaml`'s
+PVC requests).
 
 **These are installed the same way as everything else in this repo: as
 ArgoCD `Application`s, not as a manual `kubectl apply` step or a separate
@@ -281,25 +283,40 @@ at install time:
 | `cert-manager/kustomization.yaml` | cert-manager v1.21.0 |
 | `cnpg/kustomization.yaml` | CloudNativePG operator v1.30.0. **Needs `ServerSideApply=true`** in the Application's `syncOptions` — its `clusters.postgresql.cnpg.io`/`poolers.postgresql.cnpg.io` CRDs exceed Kubernetes' 262144-byte last-applied-configuration annotation limit for client-side apply (confirmed by hand: plain `kubectl apply` fails with `metadata.annotations: Too long`) |
 | `cnpg-barman-plugin/kustomization.yaml` | Barman Cloud CNPG-I plugin v0.13.0 — only needed for production's backups; depends on both cert-manager (its own mTLS cert/issuer) and the CNPG operator's CRDs already existing |
-| `apps/` | The 3 child ArgoCD `Application` manifests that actually install the above (see below) |
+| `longhorn/kustomization.yaml` | Longhorn v1.12.0. Also `ServerSideApply=true`, defensively (23 CRDs in one large manifest). **Has a real host-level prerequisite this manifest alone can't satisfy**: `open-iscsi` + a running `iscsid` service on every node (`ansible/roles/node-baseline/tasks/main.yml`) — without it, Longhorn's manifest applies cleanly but PVCs sit unbound forever (confirmed against a real cluster: `0/3 nodes are available: pod has unbound immediate PersistentVolumeClaims`, with no `longhorn` storage class registered at all until iscsid was running) |
+| `apps/` | The 4 child ArgoCD `Application` manifests that actually install the above (see below) |
 
-**Ordering, and why it's an App-of-Apps, not 3 flat Applications**:
-cert-manager and the CNPG operator have no dependency on each other, but the
-Barman plugin needs *both* already up (it issues its own mTLS cert via
-cert-manager and registers with the CNPG operator during install).
-`argocd.argoproj.io/sync-wave` is the mechanism for that — **but it's only
-honored when a sync operation is placing a resource into ordered waves. On a
-standalone, directly-applied Application, the annotation is inert** (verified
-against ArgoCD's own docs and maintainer guidance — this genuinely doesn't
-work as 3 flat top-level Applications, it silently no-ops). The fix is
-nesting: `argocd/app-cluster-operators.yaml` is a parent Application whose
-"manifests" are the 3 child Applications in `cluster-operators/apps/`
-(`cert-manager.yaml`, `cnpg.yaml` at wave `"0"`; `cnpg-barman-plugin.yaml` at
-wave `"1"`). It's the **parent's own sync operation** that enforces "wave 0
-fully Synced+Healthy before wave 1 starts" — that guarantee holds during the
-parent's syncs (bootstrap, or any drift-triggered re-sync of the parent
-itself), not as a standing invariant if the children auto-sync independently
-afterward, which is fine for a one-time operator bootstrap like this.
+**Ordering, and why it's an App-of-Apps, not 4 flat Applications**:
+cert-manager, the CNPG operator, and Longhorn have no dependency on each
+other, but the Barman plugin needs both cert-manager *and* CNPG already up
+(it issues its own mTLS cert via cert-manager and registers with the CNPG
+operator during install). `argocd.argoproj.io/sync-wave` is the mechanism
+for that — **but it's only honored when a sync operation is placing a
+resource into ordered waves. On a standalone, directly-applied Application,
+the annotation is inert** (verified against ArgoCD's own docs and
+maintainer guidance — this genuinely doesn't work as flat top-level
+Applications, it silently no-ops). The fix is nesting:
+`argocd/app-cluster-operators.yaml` is a parent Application whose
+"manifests" are the 4 child Applications in `cluster-operators/apps/`
+(`cert-manager.yaml`, `cnpg.yaml`, `longhorn.yaml` at wave `"0"`;
+`cnpg-barman-plugin.yaml` at wave `"1"`). It's the **parent's own sync
+operation** that enforces "wave 0 fully Synced+Healthy before wave 1
+starts" — that guarantee holds during the parent's syncs (bootstrap, or any
+drift-triggered re-sync of the parent itself), not as a standing invariant
+if the children auto-sync independently afterward, which is fine for a
+one-time operator bootstrap like this.
+
+**A second, unrelated ArgoCD gotcha hit while building this**: ArgoCD
+caches rendered manifests in its Redis instance (`argocd-redis`), keyed
+independently of the repo-server *process* — restarting `argocd-repo-server`
+does **not** reliably bust this cache. A stale cache here manifested as
+genuinely confusing behavior: edited manifests (verified correct via
+`kubectl kustomize` locally) kept being ignored by the live sync — ArgoCD's
+own task list showed an annotation that had been removed from git days
+earlier. Fix: `kubectl exec -n argocd <redis-pod> -- redis-cli -a
+<password-from-argocd-redis-secret> FLUSHALL`. Worth trying this before
+assuming a sync-wave/hook annotation "isn't being honored" for some deeper
+reason — it may just be stale cache.
 
 **Why this replaced a manual step**: earlier, these operators were
 documented (in `.claude/plans/infrastructure-cicd-plan.md`'s Rollout Order)
@@ -316,7 +333,7 @@ automatically the same way the app's own Kustomize manifests do, and
 ### `argocd/` — what ArgoCD watches
 
 Five top-level `Application` manifests (one of which, `app-cluster-operators.yaml`,
-is a parent whose own "resources" are 3 more child Applications defined under
+is a parent whose own "resources" are 4 more child Applications defined under
 `cluster-operators/apps/` — see above), applied once during cluster bootstrap
 (by the `argocd` Ansible role, which does a plain `kubectl apply -f argocd/`
 — every file in this directory gets applied, no per-file wiring needed) and
@@ -326,7 +343,7 @@ drift):
 
 | File | Watches path | Destination namespace |
 |---|---|---|
-| `app-cluster-operators.yaml` | `cluster-operators/apps` (renders the 3 child Applications below) | `argocd` |
+| `app-cluster-operators.yaml` | `cluster-operators/apps` (renders the 4 child Applications below) | `argocd` |
 | `app-gami-cluster-wide.yaml` | `cluster-wide` | `default` (irrelevant for cluster-scoped resources, required by the schema) |
 | `app-gami-dev.yaml` | `overlays/dev` | `gami-dev` |
 | `app-gami-staging.yaml` | `overlays/staging` | `gami-staging` |
@@ -339,6 +356,7 @@ Child Applications rendered by `app-cluster-operators.yaml` (defined in
 |---|---|---|---|
 | `cert-manager.yaml` | `cluster-operators/cert-manager` | `cert-manager` | 0 |
 | `cnpg.yaml` | `cluster-operators/cnpg` | `cnpg-system` | 0 |
+| `longhorn.yaml` | `cluster-operators/longhorn` | `longhorn-system` | 0 |
 | `cnpg-barman-plugin.yaml` | `cluster-operators/cnpg-barman-plugin` | `cnpg-system` | 1 |
 
 This is the actual GitOps loop: **commit a change to this repo → ArgoCD

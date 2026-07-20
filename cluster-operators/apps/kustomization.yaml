@@ -5,13 +5,14 @@ kind: Kustomization
 # (argocd/app-cluster-operators.yaml). sync-wave on an Application resource
 # only has an effect when some OTHER sync operation places it into ordered
 # waves — it's inert on a standalone, directly-applied Application. Nesting
-# these under one parent is what makes the wave 0 (cert-manager, cnpg) / wave
-# 1 (cnpg-barman-plugin) ordering actually enforced: the parent's sync
-# operation waits for wave 0 to be Synced+Healthy before starting wave 1.
-# (Verified against ArgoCD's own docs/maintainer responses — this is not
-# optional plumbing, a flat set of 3 top-level Applications would silently
-# ignore the sync-wave annotations entirely.)
+# these under one parent is what makes the wave 0 (cert-manager, cnpg,
+# longhorn) / wave 1 (cnpg-barman-plugin) ordering actually enforced: the
+# parent's sync operation waits for wave 0 to be Synced+Healthy before
+# starting wave 1. (Verified against ArgoCD's own docs/maintainer responses
+# — this is not optional plumbing, a flat set of top-level Applications
+# would silently ignore the sync-wave annotations entirely.)
 resources:
   - cert-manager.yaml
   - cnpg.yaml
   - cnpg-barman-plugin.yaml
+  - longhorn.yaml

@@ -1,0 +1,14 @@
+# Longhorn, pinned to the version installed/verified against this cluster
+# (see README.md's "Cluster operators" section). Provides the `longhorn`
+# storage class every overlay's postgres-cluster.yaml requests — without
+# it, PVCs sit unbound forever ("0/3 nodes are available: pod has unbound
+# immediate PersistentVolumeClaims"), confirmed against a real cluster.
+#
+# Requires open-iscsi + the iscsid service running on every node BEFORE
+# this syncs — a real host-level dependency neither ArgoCD nor Kubernetes
+# can satisfy on their own. See ansible/roles/node-baseline/tasks/main.yml.
+# This manifest alone getting applied cleanly does not mean Longhorn is
+# actually usable — check `kubectl get nodes.longhorn.io -n longhorn-system`
+# for each node's engine/iscsi status after this syncs.
+resources:
+  - https://raw.githubusercontent.com/longhorn/longhorn/v1.12.0/deploy/longhorn.yaml

@@ -60,3 +60,21 @@
   community.general.ufw:
     state: enabled
     policy: deny
+
+# Longhorn (cluster-operators/longhorn/, installed via ArgoCD) requires
+# iscsid running on every node — it's the actual storage backend Longhorn's
+# volumes use (V1 engine). This is a real host-level dependency Kubernetes
+# itself can't satisfy; ArgoCD only manages in-cluster resources. Confirmed
+# against a real cluster this session: Longhorn's PVCs sat unbound
+# ("0/3 nodes are available: pod has unbound immediate PersistentVolumeClaims")
+# with no storage class at all until this was in place.
+- name: Install open-iscsi (required by Longhorn's storage backend)
+  ansible.builtin.apt:
+    name: open-iscsi
+    state: present
+
+- name: Ensure iscsid is running and enabled
+  ansible.builtin.systemd:
+    name: iscsid
+    state: started
+    enabled: true
