@@ -5,7 +5,12 @@ kind: Kustomization
 # staging cluster/namespace — independently-generated secrets from
 # production, never copied over. Add each generated SealedSecret file here:
 #   resources:
-#     - gami-secrets.yaml
-#     - gami-signing-key.yaml
+#     - gami-secrets.yaml      # NEXTAUTH_SECRET only — gami-api's
+#                                 GAMI_JWT_SECRET/GAMI_API_TOKEN are gone
+#                                 along with gami-api itself (see README.md)
 #     - gami-smtp.yaml
+#
+# No gami-signing-key.yaml — institution signing keys are per-institution
+# application data now (managed in Postgres, see gami-app's
+# src/lib/institution-keys.ts), not a single cluster-wide Secret.
 resources: []

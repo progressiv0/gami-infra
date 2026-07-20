@@ -1,0 +1,29 @@
+# Staging's own single-instance Postgres — no HA, no backup, same reasoning
+# as overlays/dev/postgres-cluster.yaml. Staging doesn't need to survive a
+# node loss per the design decision in README.md's "Node topology" section.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: gami-postgres
+spec:
+  instances: 1
+  affinity:
+    # Pinned to the staging node, alongside staging's webapp/api (see the
+    # nodeAffinity patch below in this same overlay).
+    nodeSelector:
+      env: staging
+  storage:
+    storageClass: longhorn
+    size: 5Gi
+  bootstrap:
+    initdb:
+      database: gami_staging
+      owner: gami
+      # CNPG auto-generates the `gami` user's password and publishes a
+      # Secret named `gami-postgres-app` (the `-app` suffix is a CNPG
+      # convention), which gami-webapp/gami-migrate reference via
+      # secretKeyRef (key: uri). Verify the exact key name against your
+      # installed CNPG version.
+  postgresql:
+    pg_hba:
+      - host gami_staging gami 10.0.0.0/8 scram-sha-256

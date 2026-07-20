@@ -1,0 +1,26 @@
+---
+- name: Local machine Kubernetes + ArgoCD bootstrap
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+  vars:
+    k3s_version: v1.31.4+k3s1
+    k3s_disable:
+      - servicelb
+      - local-storage
+    k3s_node_name: "{{ ansible_hostname }}"
+    project_root: "{{ playbook_dir }}/../.."
+
+  roles:
+    - node-baseline
+
+  tasks:
+    - name: Install k3s server on localhost
+      ansible.builtin.include_role:
+        name: k3s-server
+        tasks_from: cluster-init.yml
+
+    - name: Install ArgoCD on the local Kubernetes cluster
+      ansible.builtin.include_role:
+        name: argocd

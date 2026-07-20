@@ -5,12 +5,13 @@ metadata:
   labels:
     app: gami-webapp
 spec:
-  # Single replica: src/instrumentation.ts runs an in-process hourly
-  # OTS-upgrade sweep scheduler with no leader election, and GPR_STORE_DIR
-  # below is an emptyDir (pod-local, not shared). Scaling past 1 needs either
-  # a leader-election guard (or move the sweep to a k8s CronJob instead) and
-  # a shared GPR store (NFS/Longhorn RWX) — neither exists yet, so don't bump
-  # replicas here without addressing both.
+  # Base default is 1; production's overlay bumps this to 3 (one per node,
+  # via podAntiAffinity — see overlays/production/kustomization.yaml).
+  # Safe to run >1 replica: src/instrumentation.ts's in-process OTS-upgrade
+  # sweep (gami-app's src/lib/ots-upgrade.ts) has a single-instance overlap
+  # guard the code's own comment says is safe to skip in multi-instance
+  # deploys — a concurrent sweep from multiple replicas is idempotent
+  # (just redundant calendar fetches, not data corruption).
   replicas: 1
   selector:
     matchLabels:
@@ -33,13 +34,11 @@ spec:
             - configMapRef:
                 name: gami-config
           env:
-            - name: GPR_STORE_DIR
-              value: /app/gpr-store
             # CNPG auto-generates this Secret for the `gami-postgres` Cluster
-            # (postgres-cluster.yaml) — verify the exact key name (`uri`)
-            # against your installed CNPG version; older versions may only
-            # expose host/user/password/dbname as separate keys instead of a
-            # combined connection string.
+            # (each overlay's own postgres-cluster.yaml) — verify the exact
+            # key name (`uri`) against your installed CNPG version; older
+            # versions may only expose host/user/password/dbname as separate
+            # keys instead of a combined connection string.
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -50,11 +49,6 @@ spec:
                 secretKeyRef:
                   name: gami-secrets
                   key: NEXTAUTH_SECRET
-            - name: GAMI_API_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: gami-secrets
-                  key: GAMI_API_TOKEN
             - name: SMTP_USER
               valueFrom:
                 secretKeyRef:
@@ -76,8 +70,6 @@ spec:
             capabilities:
               drop: ["ALL"]
           volumeMounts:
-            - name: gpr-store
-              mountPath: /app/gpr-store
             - name: tmp
               mountPath: /tmp
           livenessProbe:
@@ -99,10 +91,5 @@ spec:
             limits:
               memory: 512Mi
       volumes:
-        # NOT a k8s PV — matches the plan's acknowledged gap: GPR files live
-        # on pod-local storage, lost if this pod is deleted/rescheduled.
-        # Replication/durability for this is explicitly out of scope for now.
-        - name: gpr-store
-          emptyDir: {}
         - name: tmp
           emptyDir: {}

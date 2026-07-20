@@ -15,7 +15,7 @@
       INSTALL_K3S_VERSION={{ k3s_version }} \
       K3S_URL="https://{{ hostvars[k3s_bootstrap_node].ansible_host }}:6443" \
       K3S_TOKEN="{{ hostvars[k3s_bootstrap_node].k3s_node_token }}" \
-      INSTALL_K3S_EXEC="server --disable={{ k3s_disable | join(',') }}" \
+      INSTALL_K3S_EXEC="server --disable={{ k3s_disable | join(',') }} --node-label env={{ hostvars[inventory_hostname].hcloud_labels.env }}" \
       sh -
   args:
     executable: /bin/bash

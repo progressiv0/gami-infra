@@ -1,0 +1,25 @@
+# Exposes the ArgoCD UI/API on Traefik's dedicated `argocd` entrypoint
+# (see traefik-argocd-entrypoint.yaml) instead of the default web/websecure
+# ports, which stay reserved for gami-webapp.
+#
+# argocd-server runs with server.insecure=true (set on argocd-cmd-params-cm
+# in tasks/main.yml) so it speaks plain HTTP behind Traefik, which terminates
+# TLS for clients. Without --insecure, argocd-server self-terminates TLS and
+# multiplexes HTTP/1.1 (UI/REST) and HTTP/2 (gRPC) on the same port via
+# protocol sniffing — Traefik's HTTPS-to-backend transport negotiates HTTP/2
+# by default, which broke that sniffing and made every UI request 404.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  entryPoints:
+    - argocd
+  tls: {}
+  routes:
+    - match: PathPrefix(`/`)
+      kind: Rule
+      services:
+        - name: argocd-server
+          port: 80

@@ -3,15 +3,22 @@ kind: Kustomization
 
 namespace: gami
 
+# gami-api is gone — gami-app dropped the separate Go backend service;
+# crypto operations (signing, OTS anchoring) are now invoked as a local
+# binary/library from within gami-webapp itself, not over a network API.
+# Confirmed against gami-app's docker-compose.yml, which only ever defines
+# gami-webapp (+ postgres/mailpit/caddy/init/migrate) — no gami-api service.
 resources:
-  - gami-api/deployment.yaml
-  - gami-api/service.yaml
-  - gami-api/hpa.yaml
   - gami-webapp/deployment.yaml
   - gami-webapp/service.yaml
   - gami-webapp/ingress.yaml
   - gami-migrate-job.yaml
-  - postgres-cluster.yaml
+
+# postgres-cluster.yaml is NOT here — Postgres is genuinely per-environment
+# now (own database, own instance count, own backup policy — only prod
+# backs up to S3), so each overlay owns its own postgres-cluster.yaml
+# instead of one shared 3-instance Cluster. See
+# overlays/{dev,staging,production}/postgres-cluster.yaml.
 
 # ClusterIssuers are NOT here — they're cluster-scoped, and this
 # kustomization sets `namespace:` above, which `kubectl kustomize` was

@@ -13,7 +13,7 @@
     set -euo pipefail
     curl -sfL https://get.k3s.io | \
       INSTALL_K3S_VERSION={{ k3s_version }} \
-      INSTALL_K3S_EXEC="server --cluster-init --disable={{ k3s_disable | join(',') }}" \
+      INSTALL_K3S_EXEC="server --cluster-init --disable={{ k3s_disable | join(',') }} --node-label env={{ hostvars[inventory_hostname].hcloud_labels.env }}" \
       sh -
   args:
     executable: /bin/bash
@@ -33,8 +33,8 @@
   register: k3s_node_token_raw
 
 - name: Expose the token as a fact for other plays in this run
-  ansible.builtin.set_fact:
-    k3s_node_token: "{{ k3s_node_token_raw.content | b64decode | trim }}"
   # cacheable so `join.yml` (a separate play against different hosts) can
   # read it via hostvars[bootstrap_node].k3s_node_token.
-  cacheable: true
+  ansible.builtin.set_fact:
+    k3s_node_token: "{{ k3s_node_token_raw.content | b64decode | trim }}"
+    cacheable: true

@@ -1,5 +1,35 @@
 # CI/CD & Infrastructure Automation Plan
 
+> **Superseded in part — read before trusting details below.** This plan
+> predates two real changes since it was written:
+> 1. `gami-api` (the separate Go backend service) has been **removed
+>    entirely** from `gami-app` — confirmed against its actual
+>    `docker-compose.yml`, which only defines `gami-webapp` (+
+>    postgres/mailpit/caddy/init/migrate). `gami-webapp` (Next.js) is the
+>    whole app now; crypto operations run as a local binary/library inside
+>    it, not over a JWT-secured network API. Every `gami-api`,
+>    `GAMI_JWT_SECRET`, `GAMI_API_TOKEN`, `GAMI_KEY_ID`/`GAMI_PRIVATE_KEY`/
+>    `GAMI_PUBLIC_KEY`, and `gami-signing-key` reference below is stale —
+>    institution signing keys are per-institution application data in
+>    Postgres now (`gami-app`'s `src/lib/institution-keys.ts`), not a
+>    cluster Secret. The current, accurate manifests are in `base/` and
+>    `overlays/`; this doc's Phase 3/3a sections describing `gami-api` and
+>    its secrets are historical only.
+> 2. **Node topology changed**: instead of one uniform 3-node HA cluster
+>    running everything, each of the 3 nodes is now sized differently and
+>    "home" to one environment (dev/staging/production), with per-environment
+>    Postgres (only production has HA + S3 backup) and production's
+>    `gami-webapp` spread across all 3 nodes via pod anti-affinity for real
+>    redundancy. See the top-level `README.md`'s "Node topology" section for
+>    the current design — the single shared `postgres-cluster.yaml` and
+>    uniform-node-size assumptions described in Phase 4/5 below are
+>    superseded by that.
+>
+> Kept as a historical record of the CI/CD pipeline design (GitHub Actions
+> workflow shapes, general Sealed Secrets/ArgoCD reasoning) — still broadly
+> accurate for those parts. Cross-check against `README.md` and the current
+> `base/`/`overlays/` manifests for anything Postgres- or gami-api-shaped.
+
 ## Context
 
 App repo: `authenticmemory/gami-app` (moved from `progressiv0/gami`; `main` is

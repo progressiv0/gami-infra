@@ -1,0 +1,92 @@
+---
+- name: Ensure the ArgoCD namespace exists
+  ansible.builtin.command:
+    cmd: k3s kubectl create namespace {{ argocd_namespace }}
+  register: argocd_namespace_create
+  changed_when: "'created' in argocd_namespace_create.stdout"
+  failed_when: >
+    argocd_namespace_create.rc != 0 and
+    'AlreadyExists' not in argocd_namespace_create.stderr
+
+- name: Install ArgoCD manifests
+  # --server-side avoids the client-side last-applied-configuration
+  # annotation, which the applicationsets.argoproj.io CRD (huge schema)
+  # blows past Kubernetes' 262144-byte annotation limit for.
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl apply --server-side --force-conflicts -n {{ argocd_namespace }}
+      -f {{ argocd_install_url }}
+  register: argocd_install
+  changed_when: "'created' in argocd_install.stdout or 'configured' in argocd_install.stdout"
+
+- name: Wait for ArgoCD server deployment to be ready
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl -n {{ argocd_namespace }} get deployment argocd-server
+      -o jsonpath='{.status.readyReplicas}'
+  register: argocd_ready
+  until: argocd_ready.stdout | int >= 1
+  retries: "{{ argocd_wait_retries }}"
+  delay: "{{ argocd_wait_delay }}"
+  changed_when: false
+
+- name: Apply local ArgoCD Application manifests
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f "{{ argocd_app_path }}"
+
+- name: Add ArgoCD's dedicated Traefik entrypoint (port {{ argocd_ingress_port }})
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f {{ role_path }}/files/traefik-argocd-entrypoint.yaml
+  register: argocd_traefik_entrypoint
+  changed_when: "'created' in argocd_traefik_entrypoint.stdout or 'configured' in argocd_traefik_entrypoint.stdout"
+
+- name: Run argocd-server in insecure mode (TLS terminated at Traefik)
+  # Without this, argocd-server self-terminates TLS and multiplexes
+  # HTTP/1.1 (UI/REST) and HTTP/2 (gRPC) on one port via protocol sniffing.
+  # Traefik's HTTPS-to-backend transport negotiates HTTP/2 by default,
+  # which breaks that sniffing and makes every UI request 404.
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl patch configmap argocd-cmd-params-cm -n {{ argocd_namespace }}
+      --type merge -p "{\"data\":{\"server.insecure\":\"true\"}}"
+  register: argocd_insecure_patch
+  changed_when: "'patched' in argocd_insecure_patch.stdout"
+
+- name: Restart argocd-server to pick up server.insecure
+  ansible.builtin.command:
+    cmd: k3s kubectl rollout restart deployment argocd-server -n {{ argocd_namespace }}
+  when: argocd_insecure_patch.changed
+  changed_when: true
+
+- name: Wait for argocd-server rollout to finish
+  ansible.builtin.command:
+    cmd: k3s kubectl rollout status deployment argocd-server -n {{ argocd_namespace }} --timeout=120s
+  when: argocd_insecure_patch.changed
+  changed_when: false
+
+- name: Expose the ArgoCD server via IngressRoute
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f {{ role_path }}/files/ingressroute.yaml
+  register: argocd_ingressroute
+  changed_when: "'created' in argocd_ingressroute.stdout or 'configured' in argocd_ingressroute.stdout"
+
+# Node topology (see gami-infra's README.md): ArgoCD is "home" to the dev
+# node, same as dev's own webapp/Postgres — it's cluster-wide infra, not an
+# environment, but it has to live SOMEWHERE, and the dev node is the small
+# box it's designed to fit on. This is a soft preference
+# (preferredDuringScheduling), not a hard requirement — ArgoCD still comes
+# up fine on another node if the dev node is briefly unschedulable.
+- name: Patch ArgoCD workloads to prefer the dev node
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl patch {{ item.kind }} {{ item.name }} -n {{ argocd_namespace }}
+      --type merge -p
+      '{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":100,"preference":{"matchExpressions":[{"key":"env","operator":"In","values":["dev"]}]}}]}}}}}}'
+  loop:
+    - { kind: deployment, name: argocd-server }
+    - { kind: deployment, name: argocd-repo-server }
+    - { kind: deployment, name: argocd-applicationset-controller }
+    - { kind: deployment, name: argocd-dex-server }
+    - { kind: deployment, name: argocd-notifications-controller }
+    - { kind: statefulset, name: argocd-application-controller }
+  changed_when: true

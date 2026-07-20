@@ -1,0 +1,10 @@
+argocd_install_url: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+argocd_namespace: argocd
+argocd_app_path: "{{ project_root }}/argocd"
+argocd_wait_retries: 30
+argocd_wait_delay: 10
+
+# Dedicated Traefik entrypoint for the ArgoCD UI/API — kept off 80/443,
+# which are reserved for gami-webapp. Must match the port hardcoded in
+# files/traefik-argocd-entrypoint.yaml and files/ingressroute.yaml.
+argocd_ingress_port: 8443

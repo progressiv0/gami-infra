@@ -1,0 +1,12 @@
+# cert-manager, pinned to the version installed/verified against this
+# cluster (see README.md's "Cluster operators" section for why this lives
+# here instead of a manual install step). Bump the tag in the URL below to
+# upgrade — that's the entire upgrade procedure, reviewable as a normal git
+# diff.
+#
+# Referencing the upstream release manifest directly (rather than vendoring
+# a copy) keeps this in sync with cert-manager's own release process; the
+# version pin in the URL is what makes this reproducible rather than
+# tracking a moving target like /latest/.
+resources:
+  - https://github.com/cert-manager/cert-manager/releases/download/v1.21.0/cert-manager.yaml

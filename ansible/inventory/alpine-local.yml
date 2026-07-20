@@ -1,0 +1,17 @@
+# Static inventory for the 3 local Alpine VMs (not Hetzner-managed — see
+# hcloud.yml for the real production inventory). Group name matches
+# `k3s_server` so playbooks/site.yml works unchanged against either.
+all:
+  children:
+    k3s_server:
+      hosts:
+        alpine-c:
+          ansible_host: 192.168.253.128
+        alpine-w:
+          ansible_host: 192.168.253.129
+        alpine-w2:
+          ansible_host: 192.168.253.130
+  vars:
+    ansible_user: root
+    ansible_ssh_private_key_file: ~/.ssh/mrilk_np
+    ansible_python_interpreter: /usr/bin/python3

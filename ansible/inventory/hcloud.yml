@@ -9,7 +9,17 @@ plugin: hetzner.hcloud.hcloud
 # name/IP churn.
 label_selector: role=k3s-server
 
-group_by_label: true
+# `group_by_label` is not a real option for this inventory plugin (verified
+# against the collection's source — it was silently ignored before this
+# comment was added, doing nothing). `keyed_groups` is the real mechanism:
+# this creates env_dev / env_staging / env_prod groups from each node's
+# `env` Hetzner label (terraform/main.tf's `labels.env`, one of dev/staging/
+# prod — see README.md's "Node topology" section), used by
+# ansible/roles/k3s-server/tasks/cluster-init.yml to set the matching
+# Kubernetes node label at install time.
+keyed_groups:
+  - key: hcloud_labels.env
+    prefix: env
 
 # Nodes only have a public IP + a private network IP (terraform/main.tf's
 # hcloud_network attachment) — use the private one for all playbook

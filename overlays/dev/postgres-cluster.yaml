@@ -1,0 +1,34 @@
+# Dev's own single-instance Postgres — no HA, no backup. Dev doesn't need to
+# survive a node loss (per the "dev/staging don't need high reliability"
+# design decision — see README.md's "Node topology" section); losing this
+# pod just means recreating it, same as any other dev-environment throwaway
+# state. This is why there's no `backup:`/plugins block here at all, unlike
+# overlays/production/postgres-cluster.yaml.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: gami-postgres
+spec:
+  instances: 1
+  affinity:
+    # Pinned to the dev node — it's the only place dev's webapp/api run too
+    # (see the nodeAffinity patch in kustomization.yaml), so keep the
+    # database physically alongside them rather than letting the scheduler
+    # place it anywhere.
+    nodeSelector:
+      env: dev
+  storage:
+    storageClass: longhorn
+    size: 5Gi
+  bootstrap:
+    initdb:
+      database: gami_dev
+      owner: gami
+      # CNPG auto-generates the `gami` user's password and publishes a
+      # Secret named `gami-postgres-app` (the `-app` suffix is a CNPG
+      # convention), which gami-webapp/gami-migrate reference via
+      # secretKeyRef (key: uri). Verify the exact key name against your
+      # installed CNPG version.
+  postgresql:
+    pg_hba:
+      - host gami_dev gami 10.0.0.0/8 scram-sha-256

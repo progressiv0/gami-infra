@@ -4,15 +4,16 @@ kind: Kustomization
 resources:
   - ../../base
   - sealed-secrets
+  - postgres-cluster.yaml
 
 # base/ already reflects production's hostnames (app.authenticmemory.org /
 # verify.authenticmemory.org) and cert-manager issuer (letsencrypt-production)
-# as its defaults, so no Ingress patch is needed here — only staging patches
-# away from those defaults.
+# as its defaults, so no Ingress patch is needed here — only staging/dev
+# patch away from those defaults.
 
 # disableNameSuffixHash: envFrom.configMapRef.name references below don't get
 # auto-rewritten to a hash-suffixed name by this kustomize version (verified
-# with `kubectl kustomize` — the ConfigMap got suffixed but the Deployments'
+# with `kubectl kustomize` — the ConfigMap got suffixed but the Deployment's
 # envFrom didn't follow, which 404s at apply time). Trade-off: pods don't
 # auto-restart when gami-config's content changes — same manual-restart
 # caveat Phase 3a already calls out for Secret rotation.
@@ -25,7 +26,6 @@ configMapGenerator:
       - NODE_ENV=production
       - CORS_ALLOWED_ORIGIN=https://app.authenticmemory.org
       - APP_BASE_URL=https://app.authenticmemory.org
-      - GAMI_API_URL=http://gami-api:8080
       - NEXTAUTH_URL=https://app.authenticmemory.org
       - SECURE_COOKIES=true
       - AUTH_TRUST_HOST=true
@@ -39,12 +39,10 @@ configMapGenerator:
       - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
 
 # Tags here are placeholders — release.yml's `kustomize edit set image`
-# rewrites all three on every published Release. gami-webapp-migrate is a
+# rewrites both on every published Release. gami-webapp-migrate is a
 # symbolic name (see base/gami-migrate-job.yaml) mapped onto the real
 # gami-webapp repo with a -migrate tag suffix.
 images:
-  - name: ghcr.io/authenticmemory/gami-api
-    newTag: latest
   - name: ghcr.io/authenticmemory/gami-webapp
     newTag: latest
   - name: ghcr.io/authenticmemory/gami-webapp-migrate
@@ -52,7 +50,43 @@ images:
     newTag: latest-migrate
 
 replicas:
-  - name: gami-api
-    count: 2
   - name: gami-webapp
-    count: 1
+    # 3, one per node. gami-app dropped the old Go backend service — see
+    # README.md — so gami-webapp (Next.js) is the whole app now and is the
+    # one that needs real redundancy. Safe to run >1 replica: the in-process
+    # OTS-upgrade sweep's overlap guard (src/lib/ots-upgrade.ts in gami-app)
+    # is explicitly documented as single-instance-only, but a concurrent
+    # sweep from multiple replicas is idempotent/harmless (just redundant
+    # calendar fetches, not data corruption). See the podAntiAffinity patch
+    # below, which is what actually spreads these 3 replicas across nodes.
+    count: 3
+
+# Node topology (README.md): production is the environment that needs REAL
+# redundancy, so instead of a soft nodeAffinity preference (like dev/staging
+# use to normally stay off each other's nodes), gami-webapp gets
+# podAntiAffinity — "prefer not to co-locate two gami-webapp pods on the
+# same node." With 3 replicas and 3 nodes, this naturally spreads one prod
+# pod onto each node (including the dev/staging nodes) rather than piling
+# all 3 onto the big prod node alone — so losing any single node, including
+# the dedicated prod node, still leaves 2 of 3 replicas serving.
+patches:
+  - target:
+      kind: Deployment
+      name: gami-webapp
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: gami-webapp
+      spec:
+        template:
+          spec:
+            affinity:
+              podAntiAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 100
+                    podAffinityTerm:
+                      topologyKey: kubernetes.io/hostname
+                      labelSelector:
+                        matchLabels:
+                          app: gami-webapp

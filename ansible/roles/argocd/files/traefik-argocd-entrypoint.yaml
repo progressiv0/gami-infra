@@ -1,0 +1,27 @@
+# HelmChartConfig is k3s's supported way to customize the bundled Traefik
+# chart's values without editing the HelmChart resource itself (the
+# helm-controller reconciles that from k3s's internal manifests and would
+# just overwrite direct edits). This adds a dedicated entrypoint for ArgoCD
+# so it never competes with web/websecure (80/443), which stay reserved for
+# gami-webapp.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      argocd:
+        # Container port 9443 (internal-only) is exposed externally as
+        # 8443. websecure already owns container port 8443 internally
+        # (mapped externally to 443), so reusing 8443 here collides.
+        port: 9443
+        exposedPort: 8443
+        protocol: TCP
+        expose:
+          default: true
+        # Pinned so the NodePort is stable across re-renders — servicelb is
+        # disabled (see k3s-server/defaults/main.yml), so this NodePort,
+        # reachable on any node's IP, is the actual access path, not `port`.
+        nodePort: 30443

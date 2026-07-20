@@ -1,0 +1,10 @@
+# CloudNativePG operator, pinned to the version installed/verified against
+# this cluster (see README.md's "Cluster operators" section). Its CRDs
+# (clusters.postgresql.cnpg.io, poolers.postgresql.cnpg.io) exceed
+# Kubernetes' 262144-byte last-applied-configuration annotation limit for
+# client-side apply — confirmed by hand (`kubectl apply` failed with
+# "metadata.annotations: Too long"); the ArgoCD Application syncing this
+# path MUST set `syncOptions: [ServerSideApply=true]` or every sync fails
+# the same way.
+resources:
+  - https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.0/cnpg-1.30.0.yaml

@@ -1,0 +1,11 @@
+# Barman Cloud CNPG-I plugin — required for production's S3 backups (see
+# overlays/production/postgres-cluster.yaml's `spec.plugins` reference and
+# overlays/production/README-backup.md). Not needed for dev/staging, which
+# don't back up at all.
+#
+# Depends on cert-manager (this plugin issues its own mTLS certs between
+# itself and the CNPG operator via a self-signed Issuer/Certificate) and the
+# CNPG operator's CRDs both already existing — see cluster-operators/kustomization.yaml
+# for the sync-wave ordering that guarantees this.
+resources:
+  - https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.13.0/manifest.yaml

@@ -2,8 +2,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Empty until an operator runs the Phase 3a bootstrap runbook against the
-# production cluster. Add each generated SealedSecret file here as it's
-# sealed — e.g.:
+# dev namespace — independently-generated secrets from staging/production,
+# never copied over. Add each generated SealedSecret file here:
 #   resources:
 #     - gami-secrets.yaml      # NEXTAUTH_SECRET only — gami-api's
 #                                 GAMI_JWT_SECRET/GAMI_API_TOKEN are gone

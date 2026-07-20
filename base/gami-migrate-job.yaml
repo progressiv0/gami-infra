@@ -1,4 +1,4 @@
-# ArgoCD PreSync hook — runs to completion before gami-api/gami-webapp roll,
+# ArgoCD PreSync hook — runs to completion before gami-webapp rolls out,
 # exactly mirroring docker-compose.yml's gami-migrate service locally.
 # hook-delete-policy: BeforeHookCreation keeps one Job around for inspection
 # until the *next* sync creates a new one (rather than deleting immediately

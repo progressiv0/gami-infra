@@ -65,9 +65,9 @@ resource "hcloud_firewall" "gami" {
 }
 
 resource "hcloud_server" "node" {
-  count       = var.node_count
-  name        = "gami-node-${count.index + 1}"
-  server_type = var.server_type
+  for_each    = { for n in var.nodes : n.name => n }
+  name        = each.value.name
+  server_type = each.value.server_type
   image       = "ubuntu-24.04"
   location    = var.location
   ssh_keys    = [hcloud_ssh_key.ops.id]
@@ -77,10 +77,16 @@ resource "hcloud_server" "node" {
     network_id = hcloud_network.gami.id
   }
 
-  # Ansible's dynamic hcloud inventory (ansible/inventory/hcloud.yml) groups
-  # nodes by this label rather than by hardcoded IPs.
   labels = {
+    # Ansible's dynamic hcloud inventory (ansible/inventory/hcloud.yml)
+    # groups nodes by this label rather than by hardcoded IPs — all 3 run
+    # the k3s server role regardless of which environment they're "home" to.
     role = "k3s-server"
+    # Consumed by Ansible (node-baseline / k3s-server roles, applied as a
+    # Kubernetes node label post-join) and referenced directly by
+    # nodeAffinity in base/*/deployment.yaml + overlays' postgres-cluster
+    # resources — see README.md's "Node topology" section.
+    env = each.value.env
   }
 
   depends_on = [hcloud_network_subnet.gami]
