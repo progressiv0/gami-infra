@@ -11,6 +11,11 @@
       - local-storage
     k3s_node_name: "{{ ansible_hostname }}"
     project_root: "{{ playbook_dir }}/../.."
+    # Overrides the argocd role's default (staging + production, matching
+    # real hcloud) — a single local machine only needs dev to exercise the
+    # infrastructure itself. See roles/argocd/defaults/main.yml.
+    argocd_gami_environments:
+      - dev
 
   roles:
     - node-baseline

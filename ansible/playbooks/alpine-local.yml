@@ -2,6 +2,12 @@
 # inventory/alpine-local.yml. Skips node-baseline on purpose — that role is
 # apt/ufw/sudo and written for production's real Debian/Ubuntu Hetzner nodes
 # (see ansible/roles/node-baseline/tasks/main.yml), not this throwaway rig.
+#
+# Only gami-dev gets deployed here — deliberately not staging/production.
+# Running all three environments simultaneously on 3 small test VMs is what
+# caused this repo's repeated disk-pressure/Longhorn-scheduling/redis-evicted
+# problems; a local rig only needs one environment to exercise the
+# infrastructure itself. See argocd_gami_environments below.
 - name: Bootstrap the first k3s server (cluster-init)
   hosts: k3s_server
   become: true
@@ -37,6 +43,11 @@
   vars:
     k3s_bootstrap_node: "{{ groups['k3s_server'] | sort | first }}"
     project_root: "{{ playbook_dir }}/../.."
+    # Overrides the role default (staging + production, matching real
+    # hcloud) — see this file's header comment and
+    # roles/argocd/defaults/main.yml for why local rigs only run dev.
+    argocd_gami_environments:
+      - dev
   tasks:
     - name: Install ArgoCD (delegated to the bootstrap node)
       block:

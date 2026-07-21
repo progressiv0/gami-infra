@@ -4,6 +4,20 @@ argocd_app_path: "{{ project_root }}/argocd"
 argocd_wait_retries: 30
 argocd_wait_delay: 10
 
+# Which per-environment app-gami-*.yaml Applications to apply. Default
+# matches the real Hetzner (hcloud) production cluster: staging + production
+# only — dev is deliberately NOT part of the real cluster, it's a
+# local-test-only concept. Local playbooks (local.yml, alpine-local.yml)
+# override this to just ["dev"]: running staging/production on a handful of
+# small local test VMs (or dev alongside them) is what caused this repo's
+# repeated disk-pressure/Longhorn-scheduling/OOM problems this session —
+# local rigs only need dev to exercise the infrastructure itself.
+# app-cluster-operators.yaml and app-gami-cluster-wide.yaml are NOT
+# per-environment and are always applied regardless of this list.
+argocd_gami_environments:
+  - staging
+  - production
+
 # Dedicated Traefik entrypoint for the ArgoCD UI/API — kept off 80/443,
 # which are reserved for gami-webapp. Must match the port hardcoded in
 # files/traefik-argocd-entrypoint.yaml and files/ingressroute.yaml.

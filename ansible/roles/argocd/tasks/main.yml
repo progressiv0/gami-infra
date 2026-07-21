@@ -30,9 +30,22 @@
   delay: "{{ argocd_wait_delay }}"
   changed_when: false
 
-- name: Apply local ArgoCD Application manifests
+# Always applied regardless of argocd_gami_environments — neither is
+# per-environment (cluster-operators is cluster-wide infra;
+# gami-cluster-wide is the shared ClusterIssuers, see cluster-wide/).
+- name: Apply cluster-wide ArgoCD Application manifests
   ansible.builtin.command:
-    cmd: k3s kubectl apply -f "{{ argocd_app_path }}"
+    cmd: "k3s kubectl apply -f {{ argocd_app_path }}/{{ item }}"
+  loop:
+    - app-cluster-operators.yaml
+    - app-gami-cluster-wide.yaml
+
+# See argocd_gami_environments' own comment (roles/argocd/defaults/main.yml)
+# for why local playbooks restrict this to ["dev"] only.
+- name: Apply the per-environment ArgoCD Application manifests
+  ansible.builtin.command:
+    cmd: "k3s kubectl apply -f {{ argocd_app_path }}/app-gami-{{ item }}.yaml"
+  loop: "{{ argocd_gami_environments }}"
 
 - name: Add ArgoCD's dedicated Traefik entrypoint (port {{ argocd_ingress_port }})
   ansible.builtin.command:
