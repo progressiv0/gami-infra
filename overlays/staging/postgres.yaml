@@ -47,12 +47,12 @@ spec:
               subPath: pgdata
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "gami"]
+              command: ["pg_isready", "-U", "gami", "-d", "gami_staging"]
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             exec:
-              command: ["pg_isready", "-U", "gami"]
+              command: ["pg_isready", "-U", "gami", "-d", "gami_staging"]
             initialDelaySeconds: 15
             periodSeconds: 10
       volumes:
