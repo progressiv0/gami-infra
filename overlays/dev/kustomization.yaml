@@ -10,6 +10,7 @@ resources:
   - ../../base
   - sealed-secrets
   - postgres-cluster.yaml
+  - mailpit.yaml
 
 # See overlays/production/kustomization.yaml for why this is disabled.
 generatorOptions:
@@ -24,8 +25,14 @@ configMapGenerator:
       - NEXTAUTH_URL=https://dev.authenticmemory.org
       - SECURE_COOKIES=true
       - AUTH_TRUST_HOST=true
-      - SMTP_HOST=smtp.example.com
-      - SMTP_PORT=587
+      # Routed at mailpit.yaml's in-cluster Service — mirrors gami-app's
+      # docker-compose.local.yml, which points the webapp's SMTP_* at its
+      # local mailpit service the same way. Captured mail (magic-link
+      # sign-in, DID-publish notices) is readable via
+      # `kubectl port-forward -n gami-dev svc/mailpit 8025:8025` then
+      # http://localhost:8025 — deliberately not exposed any other way.
+      - SMTP_HOST=mailpit
+      - SMTP_PORT=1025
       - SMTP_SECURE=false
       - SMTP_FROM=noreply@authenticmemory.org
       - SMTP_FROM_NAME=Authentic Memory (dev)

@@ -1,0 +1,70 @@
+# Dev-only SMTP catcher — mirrors gami-app's docker-compose.local.yml
+# mailpit service so dev behaves the same way local Docker Compose does:
+# outbound email (magic-link sign-in, DID-publish notices) is captured here
+# instead of actually being sent anywhere. Deliberately NOT added to
+# staging/production, and deliberately NOT exposed via NodePort/Ingress —
+# gami-app's own compose comment warns this should stay loopback-only,
+# since it captures real single-use sign-in links. Reach the web UI with
+# `kubectl port-forward -n gami-dev svc/mailpit 8025:8025` when you need to
+# read a captured email, rather than a standing exposed port.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+  labels:
+    app: mailpit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailpit
+  template:
+    metadata:
+      labels:
+        app: mailpit
+    spec:
+      containers:
+        - name: mailpit
+          image: axllent/mailpit:latest
+          ports:
+            - name: smtp
+              containerPort: 1025
+            - name: http
+              containerPort: 8025
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailpit
+  labels:
+    app: mailpit
+spec:
+  # ClusterIP (default) — internal-only, same reasoning as gami-api's old
+  # Service before it was removed: nothing outside the cluster should reach
+  # this directly. Use port-forward for occasional access to the web UI.
+  selector:
+    app: mailpit
+  ports:
+    - name: smtp
+      port: 1025
+      targetPort: smtp
+    - name: http
+      port: 8025
+      targetPort: http
