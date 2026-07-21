@@ -26,7 +26,7 @@ another environment is already running on this cluster, skip straight to
 Identical to staging's prerequisites — this is one cluster, not separate
 ones per environment. Follow [README-staging.md](README-staging.md)'s
 **One-time cluster bootstrap** section in full (Terraform provisioning,
-Ansible k3s+ArgoCD bootstrap — cert-manager, CloudNativePG, Longhorn, and
+Ansible k3s+ArgoCD bootstrap — cert-manager, CloudNativePG, and
 the Sealed Secrets controller all install themselves automatically via
 ArgoCD once that's done, see [README.md](README.md)'s `cluster-operators/`
 section). Come back here once that's done.
@@ -249,9 +249,10 @@ maintenance window, not casually against live traffic:
 - **Postgres failover**: delete the primary Postgres pod — confirm
   CloudNativePG promotes a replica automatically and `gami-webapp` reconnects
   without manual intervention.
-- **Storage resilience**: cordon/drain the node hosting a Postgres replica's
-  Longhorn volume — confirm Longhorn keeps that data available from its
-  other replicas.
+- **Storage resilience**: this is what the Postgres failover test above
+  already covers — each CNPG instance has its own independent `local-path`
+  PV, so node-loss tolerance comes from CNPG's own streaming replication,
+  not a replicated storage layer underneath.
 - **Health probes actually gate traffic**: temporarily scale Postgres to 0
   (or block its port) and confirm `/api/public/health` returns 503 and the
   pod is marked `NotReady` — not just logging an error while still silently

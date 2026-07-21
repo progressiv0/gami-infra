@@ -371,28 +371,15 @@ back to the committed `letsencrypt-staging`/`letsencrypt-production` value
 on its next sync; that's expected and fine once the Ingress health check
 fix above means it no longer blocks anything either way.
 
-### Gotcha: Longhorn replica scheduling fails even after fixing the percentage threshold
+### Gotcha: CNPG Cluster gets wedged after a storage-related failure
 
-Two distinct Longhorn scheduling failures look similar but need different
-fixes — check `kubectl describe volumes.longhorn.io <name> -n longhorn-system`'s
-`Scheduled` condition message to tell them apart:
-- `"disks are unavailable"` / a disk's `Schedulable` condition is `False`
-  with a `DiskPressure` reason — the node is above Longhorn's
-  `storage-minimal-available-percentage` threshold (25% free by default).
-  Fix: lower the setting (see `cluster-operators/longhorn/settings.yaml`).
-- `"insufficient storage"` — the node has enough free *percentage* now, but
-  not enough raw space for this specific PVC's requested size. Lowering the
-  percentage threshold further won't fix this; the actual fix is requesting
-  less storage (see `overlays/dev/postgres-cluster.yaml`'s `size:`) or
-  giving the node more real disk.
-
-Either way, after fixing the underlying cause you may need to delete the
-CNPG `Cluster` (and its PVC, if orphaned: `kubectl delete pvc <name> -n
-<namespace>`) rather than just the stuck pod — CNPG can get its own state
-tracking wedged after a storage-related failure
-(`STATUS: Cluster is unrecoverable and needs manual intervention`), and
-recreating the whole `Cluster` object is more reliable than trying to
-un-wedge it in place.
+If a Postgres `Cluster`'s `initdb` Job hits `BackoffLimitExceeded` for any
+storage-related reason (PVC stuck pending, node out of disk, etc.), CNPG can
+get its own state tracking wedged even after the underlying cause is fixed
+(`STATUS: Cluster is unrecoverable and needs manual intervention`). Deleting
+just the stuck pod or Job usually isn't enough — delete the whole `Cluster`
+object (and its PVC, if orphaned: `kubectl delete pvc <name> -n <namespace>`)
+and let CNPG recreate it from scratch.
 
 ---
 
@@ -458,23 +445,18 @@ For genuinely local app testing, either:
 Either way, remember the app itself needs:
 - `ghcr-pull-secret` created manually (see
   `base/README-image-pull-secret.md`) — nothing pulls without it.
-- **cert-manager, the CloudNativePG operator, Longhorn, and Sealed
+- **cert-manager, the CloudNativePG operator, and Sealed
   Secrets** — if `argocd/`'s manifests were applied (either via the
   `argocd` role or by hand), these install themselves automatically
   through `argocd/app-cluster-operators.yaml` (see [README.md](README.md)'s
   `cluster-operators/` section) — no separate step needed. If you skipped
   ArgoCD entirely and only ran `kubectl apply -k overlays/...` directly,
   you'll need to apply `cluster-operators/cert-manager`,
-  `cluster-operators/cnpg`, `cluster-operators/longhorn`, and
-  `cluster-operators/sealed-secrets` yourself the same way (`kubectl apply
-  -k cluster-operators/cnpg --server-side` — CNPG's and Longhorn's CRDs are
-  too large for client-side apply, see those Kustomizations' own comments).
-- **Longhorn also needs `open-iscsi` + a running `iscsid` service on every
-  node** — a real host-level dependency no manifest can satisfy. On a local
-  VM this means installing it yourself to match `ansible/roles/node-baseline/tasks/main.yml`
-  (`apt install open-iscsi && systemctl enable --now iscsid` on
-  Debian/Ubuntu; adjust for other distros). Without this, Longhorn's
-  manifest applies cleanly but PVCs sit unbound forever.
+  `cluster-operators/cnpg`, and `cluster-operators/sealed-secrets` yourself
+  the same way (`kubectl apply -k cluster-operators/cnpg --server-side` —
+  CNPG's CRDs are too large for client-side apply, see that Kustomization's
+  own comments). Postgres storage itself needs nothing extra — every
+  `postgres-cluster.yaml` uses k3s's bundled `local-path` storage class.
 - **The CNPG Barman Cloud plugin** — only relevant if testing production's
   S3 backup locally; also GitOps-managed (`cluster-operators/cnpg-barman-plugin/`),
   applied automatically alongside cert-manager/CNPG. See
@@ -490,7 +472,7 @@ Either way, remember the app itself needs:
 
 For a local smoke test, it's usually far simpler to run the app via its own
 `docker-compose.yml` (in the `gami-app` repo) than to stand up the full
-CNPG/Longhorn/SealedSecrets chain locally — this repo's local path is mainly
+CNPG/SealedSecrets chain locally — this repo's local path is mainly
 useful for testing **infrastructure** changes (Ansible roles, Kustomize
 overlays, ArgoCD wiring), not for day-to-day app development.
 

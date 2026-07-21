@@ -13,22 +13,17 @@ spec:
     nodeSelector:
       env: staging
   storage:
-    # longhorn-single-replica, not the default `longhorn` (3 replicas) —
-    # staging doesn't need storage-level redundancy any more than it needs
-    # CNPG-level HA (see this file's header), and on this repo's small
-    # test-rig nodes, 3-way replica sync made every volume attach slow
-    # enough to race the initdb Job's own retry/backoff window, tearing
-    # down in-progress attaches over and over ("no matching attachment
-    # ticket" in longhorn-manager's logs) until backoffLimit was exhausted.
-    # See cluster-operators/longhorn/storageclass-single-replica.yaml.
-    storageClass: longhorn-single-replica
+    # k3s's bundled local-path-provisioner — single PV, pinned to whatever
+    # node it's created on. That's fine here: this Cluster is itself pinned
+    # to the staging node (nodeSelector below), and staging doesn't need the
+    # volume to survive node loss any more than it needs CNPG-level HA (see
+    # this file's header).
+    storageClass: local-path
     # 1Gi — staging holds no real data, and this repo's test-rig nodes have
-    # very little raw disk headroom (confirmed against a real cluster:
-    # Longhorn couldn't schedule a replica for a 5Gi request — "precheck new
-    # replica failed: insufficient storage" — even with its scheduling
-    # threshold already lowered, because the nodes genuinely didn't have 5Gi
-    # free). `allowVolumeExpansion: true` means this can be grown later
-    # without recreating the Cluster if needed.
+    # very little raw disk headroom. Note: k3s's bundled local-path-provisioner
+    # doesn't support live volume expansion the way Longhorn did — growing
+    # this later means recreating the Cluster (and its PVC), not just
+    # editing `size:` in place.
     size: 1Gi
   bootstrap:
     initdb:

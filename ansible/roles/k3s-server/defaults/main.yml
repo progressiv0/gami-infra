@@ -1,9 +1,13 @@
 k3s_version: v1.31.4+k3s1
 
-# k3s server flags — disabled components we deliberately replace ourselves:
-# servicelb (not needed, Traefik handles ingress directly on the host
-# network) and the bundled local-path storage provisioner (Longhorn is the
-# real storage class this plan uses, see Phase 4).
+# k3s server flags — servicelb is disabled because Traefik handles ingress
+# directly on the host network instead. The bundled local-path storage
+# provisioner stays enabled: CNPG's own multi-instance streaming replication
+# (across nodes, one PV per instance) already gives Postgres node-loss
+# tolerance, and S3/Barman backups cover total loss, so there's no need for
+# a replicated block-storage layer (Longhorn) underneath each PV as well —
+# that would just be a second, redundant copy of the same guarantee, and on
+# this repo's test nodes it also dragged in a hard iscsi_tcp kernel-module
+# dependency that isn't present on every node.
 k3s_disable:
   - servicelb
-  - local-storage

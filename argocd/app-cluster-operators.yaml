@@ -1,11 +1,12 @@
 # App-of-Apps parent: its "manifests" are the child Application objects in
-# cluster-operators/apps/ (cert-manager, cnpg, cnpg-barman-plugin, longhorn).
-# This nesting is required, not stylistic — `argocd.argoproj.io/sync-wave`
-# on an Application resource is only honored when some OTHER sync operation
-# places it into ordered waves; it's inert on a standalone, directly-applied
-# Application (confirmed against ArgoCD's own docs/maintainer guidance).
-# Nesting under this parent is what makes cert-manager/cnpg/longhorn (wave
-# 0) actually finish syncing+healthy before the Barman plugin (wave 1) starts.
+# cluster-operators/apps/ (cert-manager, cnpg, cnpg-barman-plugin,
+# sealed-secrets). This nesting is required, not stylistic —
+# `argocd.argoproj.io/sync-wave` on an Application resource is only honored
+# when some OTHER sync operation places it into ordered waves; it's inert on
+# a standalone, directly-applied Application (confirmed against ArgoCD's own
+# docs/maintainer guidance). Nesting under this parent is what makes
+# cert-manager/cnpg/sealed-secrets (wave 0) actually finish syncing+healthy
+# before the Barman plugin (wave 1) starts.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

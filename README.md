@@ -106,11 +106,13 @@ Kubernetes node label at k3s install time (`--node-label env=...` in
   (3 instances spread across all 3 nodes via `topologyKey:
   kubernetes.io/hostname`) **and** the only one that backs up to S3 (nightly
   scheduled + on-demand, via the CNPG Barman Cloud plugin — see
-  `overlays/production/README-backup.md`). Two layers of redundancy for
-  production specifically: CloudNativePG replicates at the Postgres level
-  (streaming replication, automatic failover), and Longhorn replicates the
-  underlying volume across nodes (survives total node/disk loss, not just
-  process death).
+  `overlays/production/README-backup.md`). Node-loss tolerance comes from
+  CloudNativePG itself (streaming replication, automatic failover) — each
+  instance gets its own independent PV on its own node, so there's no need
+  for a replicated block-storage layer (e.g. Longhorn) underneath as well;
+  that would just be a second, redundant copy of the same guarantee. Total
+  loss of all instances is what the S3 backup is for. All three environments
+  use k3s's bundled `local-path` storage class for this reason.
 
 ---
 
@@ -126,7 +128,7 @@ gami-infra/
 │   ├── staging/           Per-environment Kustomize overlay + secrets + Postgres
 │   └── production/        Per-environment Kustomize overlay + secrets + Postgres + S3 backup
 ├── cluster-wide/         Cluster-scoped resources shared by every environment
-├── cluster-operators/    Third-party operators (cert-manager, CNPG, Longhorn, Sealed Secrets, backup plugin) — GitOps-managed, not manual
+├── cluster-operators/    Third-party operators (cert-manager, CNPG, Sealed Secrets, backup plugin) — GitOps-managed, not manual
 │   └── apps/               Child ArgoCD Applications for the operators (App-of-Apps pattern)
 ├── argocd/               ArgoCD Application definitions (what ArgoCD watches)
 └── .claude/plans/        Design doc this repo was built from (historical record — see its own superseded-notice)
@@ -266,9 +268,13 @@ Third-party Kubernetes operators the app manifests depend on — cert-manager
 (for `ClusterIssuer`/`Certificate`), the CloudNativePG operator (for the
 `Cluster` CRD every `overlays/*/postgres-cluster.yaml` uses), the CNPG
 Barman Cloud plugin (production's S3 backup — see `overlays/production/README-backup.md`),
-Longhorn (the `longhorn` storage class every `postgres-cluster.yaml`'s PVC
-requests), and the Sealed Secrets controller (decrypts each overlay's
-`sealed-secrets/*.yaml` into real `Secret`s).
+and the Sealed Secrets controller (decrypts each overlay's
+`sealed-secrets/*.yaml` into real `Secret`s). Every `postgres-cluster.yaml`'s
+PVC uses k3s's own bundled `local-path` storage class — no separate storage
+operator needed, since CNPG's own multi-instance streaming replication (plus
+S3 backup for production) already covers node-loss and disaster recovery
+without a replicated block-storage layer underneath (see "Node topology"
+above for the fuller reasoning).
 
 **These are installed the same way as everything else in this repo: as
 ArgoCD `Application`s, not as a manual `kubectl apply` step or a separate
@@ -284,12 +290,11 @@ at install time:
 | `cert-manager/kustomization.yaml` | cert-manager v1.21.0 |
 | `cnpg/kustomization.yaml` | CloudNativePG operator v1.30.0. **Needs `ServerSideApply=true`** in the Application's `syncOptions` — its `clusters.postgresql.cnpg.io`/`poolers.postgresql.cnpg.io` CRDs exceed Kubernetes' 262144-byte last-applied-configuration annotation limit for client-side apply (confirmed by hand: plain `kubectl apply` fails with `metadata.annotations: Too long`) |
 | `cnpg-barman-plugin/kustomization.yaml` | Barman Cloud CNPG-I plugin v0.13.0 — only needed for production's backups; depends on both cert-manager (its own mTLS cert/issuer) and the CNPG operator's CRDs already existing |
-| `longhorn/kustomization.yaml` | Longhorn v1.12.0. Also `ServerSideApply=true`, defensively (23 CRDs in one large manifest). **Has a real host-level prerequisite this manifest alone can't satisfy**: `open-iscsi` + a running `iscsid` service on every node (`ansible/roles/node-baseline/tasks/main.yml`) — without it, Longhorn's manifest applies cleanly but PVCs sit unbound forever (confirmed against a real cluster: `0/3 nodes are available: pod has unbound immediate PersistentVolumeClaims`, with no `longhorn` storage class registered at all until iscsid was running) |
 | `sealed-secrets/kustomization.yaml` | Bitnami Sealed Secrets controller v0.38.4. **Lands in `kube-system`, not its own namespace** — the upstream `controller.yaml` hardcodes that namespace on every resource it defines, so the Application's `destination.namespace` has no effect here. `kubeseal --fetch-cert` needs `--controller-namespace kube-system --controller-name sealed-secrets-controller` (the full name, not the shorter `sealed-secrets` some docs assume) to match |
-| `apps/` | The 5 child ArgoCD `Application` manifests that actually install the above (see below) |
+| `apps/` | The 4 child ArgoCD `Application` manifests that actually install the above (see below) |
 
-**Ordering, and why it's an App-of-Apps, not 5 flat Applications**:
-cert-manager, the CNPG operator, Longhorn, and Sealed Secrets have no
+**Ordering, and why it's an App-of-Apps, not 4 flat Applications**:
+cert-manager, the CNPG operator, and Sealed Secrets have no
 dependency on each other, but the Barman plugin needs both cert-manager
 *and* CNPG already up (it issues its own mTLS cert via cert-manager and
 registers with the CNPG operator during install). `argocd.argoproj.io/sync-wave`
@@ -299,8 +304,8 @@ Application, the annotation is inert** (verified against ArgoCD's own docs
 and maintainer guidance — this genuinely doesn't work as flat top-level
 Applications, it silently no-ops). The fix is nesting:
 `argocd/app-cluster-operators.yaml` is a parent Application whose
-"manifests" are the 5 child Applications in `cluster-operators/apps/`
-(`cert-manager.yaml`, `cnpg.yaml`, `longhorn.yaml`, `sealed-secrets.yaml`
+"manifests" are the 4 child Applications in `cluster-operators/apps/`
+(`cert-manager.yaml`, `cnpg.yaml`, `sealed-secrets.yaml`
 at wave `"0"`; `cnpg-barman-plugin.yaml` at wave `"1"`). It's the
 **parent's own sync operation** that enforces "wave 0 fully Synced+Healthy
 before wave 1 starts" — that guarantee holds during the parent's syncs
@@ -335,7 +340,7 @@ automatically the same way the app's own Kustomize manifests do, and
 ### `argocd/` — what ArgoCD watches
 
 Five top-level `Application` manifests (one of which, `app-cluster-operators.yaml`,
-is a parent whose own "resources" are 5 more child Applications defined under
+is a parent whose own "resources" are 4 more child Applications defined under
 `cluster-operators/apps/` — see above), applied once during cluster bootstrap
 (by the `argocd` Ansible role, which does a plain `kubectl apply -f argocd/`
 — every file in this directory gets applied, no per-file wiring needed) and
@@ -345,7 +350,7 @@ drift):
 
 | File | Watches path | Destination namespace |
 |---|---|---|
-| `app-cluster-operators.yaml` | `cluster-operators/apps` (renders the 5 child Applications below) | `argocd` |
+| `app-cluster-operators.yaml` | `cluster-operators/apps` (renders the 4 child Applications below) | `argocd` |
 | `app-gami-cluster-wide.yaml` | `cluster-wide` | `default` (irrelevant for cluster-scoped resources, required by the schema) |
 | `app-gami-dev.yaml` | `overlays/dev` | `gami-dev` |
 | `app-gami-staging.yaml` | `overlays/staging` | `gami-staging` |
@@ -358,7 +363,6 @@ Child Applications rendered by `app-cluster-operators.yaml` (defined in
 |---|---|---|---|
 | `cert-manager.yaml` | `cluster-operators/cert-manager` | `cert-manager` | 0 |
 | `cnpg.yaml` | `cluster-operators/cnpg` | `cnpg-system` | 0 |
-| `longhorn.yaml` | `cluster-operators/longhorn` | `longhorn-system` | 0 |
 | `sealed-secrets.yaml` | `cluster-operators/sealed-secrets` | `kube-system` (hardcoded by the upstream manifest, not this field) | 0 |
 | `cnpg-barman-plugin.yaml` | `cluster-operators/cnpg-barman-plugin` | `cnpg-system` | 1 |
 

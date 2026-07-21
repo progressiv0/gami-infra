@@ -1,13 +1,17 @@
-# Production's Postgres — the only environment with HA + S3 backup. Two
-# layers of redundancy, deliberately:
-#   - CloudNativePG replicates at the Postgres level (streaming replication,
-#     automatic failover if the primary dies).
-#   - `topologyKey: kubernetes.io/hostname` spreads the 3 instances across
-#     all 3 nodes (dev/staging/prod), never doubling up on one — this is
-#     the same mechanism that lets prod's webapp/api replicas spread across
-#     all 3 nodes too (see the podAntiAffinity patch in kustomization.yaml).
-#     Losing the prod node specifically still leaves 2 of 3 Postgres
-#     instances up, on the dev/staging nodes.
+# Production's Postgres — the only environment with HA + S3 backup.
+# Node-loss tolerance comes from CloudNativePG itself, not the storage
+# layer: it replicates at the Postgres level (streaming replication,
+# automatic failover if the primary dies), and each of the 3 instances gets
+# its own independent PV via `topologyKey: kubernetes.io/hostname`, which
+# spreads them across all 3 nodes (dev/staging/prod), never doubling up on
+# one — this is the same mechanism that lets prod's webapp/api replicas
+# spread across all 3 nodes too (see the podAntiAffinity patch in
+# kustomization.yaml). Losing the prod node specifically still leaves 2 of 3
+# Postgres instances up, on the dev/staging nodes — no replicated block
+# storage (e.g. Longhorn) needed underneath, since CNPG already replicates
+# the data at the database level; adding storage-level replication on top
+# would just be a second, redundant copy of the same guarantee. Total loss
+# of all 3 instances is what the S3/Barman backup below is for.
 # Requires the CloudNativePG operator AND the Barman Cloud CNPG-I plugin
 # (`plugin-barman-cloud`) installed in the cluster — see the barmanObjectName
 # reference below and hetzner-postgres-backup-creds.yaml (Secret, created
@@ -21,7 +25,7 @@ spec:
   affinity:
     topologyKey: kubernetes.io/hostname
   storage:
-    storageClass: longhorn
+    storageClass: local-path
     size: 10Gi
   bootstrap:
     initdb:

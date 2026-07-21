@@ -142,7 +142,7 @@ Let's Encrypt cert (an `Ingress`/`IngressRoute` with
 `cert-manager.io/cluster-issuer: letsencrypt-production`) rather than relying
 on the raw NodePort long-term.
 
-### 4. Cluster operators (cert-manager, CNPG, Longhorn, Sealed Secrets) — automatic, just confirm they came up
+### 4. Cluster operators (cert-manager, CNPG, Sealed Secrets) — automatic, just confirm they came up
 
 Unlike an earlier version of this repo, **none of these are a manual
 install step anymore** — `argocd/app-cluster-operators.yaml` (an
@@ -158,8 +158,6 @@ kubectl get application cluster-operators -n argocd
 # or, since the children aren't labeled that way by default, just:
 kubectl get pods -n cert-manager
 kubectl get pods -n cnpg-system
-kubectl get pods -n longhorn-system
-kubectl get storageclass longhorn
 kubectl get pods -n kube-system -l name=sealed-secrets-controller
 ```
 
@@ -170,12 +168,12 @@ kubectl patch application cluster-operators -n argocd --type merge \
   -p '{"operation":{"sync":{"revision":"HEAD"},"initiatedBy":{"username":"admin"}}}'
 ```
 
-**Longhorn needs `open-iscsi` + a running `iscsid` service on every node**
-before its PVCs can actually bind — `ansible/roles/node-baseline/tasks/main.yml`
-installs this, so it should already be true if `site.yml` ran the full
-`node-baseline` role. If a Postgres PVC sits `Pending` with `unbound
-immediate PersistentVolumeClaims`, check `systemctl status iscsid` on each
-node before assuming it's a Longhorn manifest problem.
+Postgres storage needs no separate operator — every `postgres-cluster.yaml`
+uses k3s's own bundled `local-path` storage class, since CNPG's
+multi-instance streaming replication (plus S3 backup for production)
+already covers node-loss and disaster recovery without a replicated
+block-storage layer underneath (see [README.md](README.md)'s "Node
+topology" section).
 
 **Sealed Secrets lands in `kube-system`, not its own namespace** — the
 upstream `controller.yaml` hardcodes that namespace on every resource it
