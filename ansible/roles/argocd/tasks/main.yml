@@ -70,6 +70,28 @@
   register: argocd_ingressroute
   changed_when: "'created' in argocd_ingressroute.stdout or 'configured' in argocd_ingressroute.stdout"
 
+# ArgoCD's built-in Ingress health check expects status.loadBalancer to be
+# populated, which Traefik (host-network mode, servicelb disabled — see
+# k3s-server/defaults/main.yml) never sets. Without this override, every
+# Application with an Ingress gets stuck forever on "waiting for healthy
+# state of networking.k8s.io/Ingress/..." — confirmed against a real
+# cluster, blocks the whole sync-wave chain (gami-migrate/postgres-cluster
+# never even get created). See files/ingress-health-check.lua for the
+# full explanation.
+- name: Read the custom Ingress health check Lua script
+  ansible.builtin.slurp:
+    src: "{{ role_path }}/files/ingress-health-check.lua"
+  register: ingress_health_lua
+
+- name: Patch argocd-cm with the Ingress health check override
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl patch configmap argocd-cm -n {{ argocd_namespace }}
+      --type merge -p
+      {{ ({'data': {'resource.customizations.health.networking.k8s.io_Ingress': ingress_health_lua.content | b64decode}} | to_json) | quote }}
+  register: argocd_ingress_health_patch
+  changed_when: "'patched' in argocd_ingress_health_patch.stdout"
+
 # Node topology (see gami-infra's README.md): ArgoCD is "home" to the dev
 # node, same as dev's own webapp/Postgres — it's cluster-wide infra, not an
 # environment, but it has to live SOMEWHERE, and the dev node is the small

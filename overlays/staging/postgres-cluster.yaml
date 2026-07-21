@@ -14,7 +14,14 @@ spec:
       env: staging
   storage:
     storageClass: longhorn
-    size: 5Gi
+    # 1Gi — staging holds no real data, and this repo's test-rig nodes have
+    # very little raw disk headroom (confirmed against a real cluster:
+    # Longhorn couldn't schedule a replica for a 5Gi request — "precheck new
+    # replica failed: insufficient storage" — even with its scheduling
+    # threshold already lowered, because the nodes genuinely didn't have 5Gi
+    # free). `allowVolumeExpansion: true` on the longhorn StorageClass means
+    # this can be grown later without recreating the Cluster if needed.
+    size: 1Gi
   bootstrap:
     initdb:
       database: gami_staging
