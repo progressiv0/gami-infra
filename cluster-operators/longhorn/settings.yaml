@@ -1,0 +1,16 @@
+# Longhorn refuses to schedule a replica onto any disk with less than this
+# percentage free (default 25%) — appropriate for a real production cluster
+# with headroom to spare, but this repo's small test-rig nodes (Alpine VMs,
+# resized twice already this session) sit at 81-91% used in practice, well
+# past the default threshold. Confirmed against a real cluster: production's
+# Postgres volume had zero replicas scheduled at all
+# ("precheck new replica failed: disks are unavailable") until this was
+# lowered. 10% is a pragmatic floor for a small/test cluster, not a
+# production recommendation — a real production deployment with properly
+# sized nodes should leave the 25% default alone.
+apiVersion: longhorn.io/v1beta2
+kind: Setting
+metadata:
+  name: storage-minimal-available-percentage
+  namespace: longhorn-system
+value: "10"

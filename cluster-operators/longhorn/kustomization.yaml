@@ -12,3 +12,4 @@
 # for each node's engine/iscsi status after this syncs.
 resources:
   - https://raw.githubusercontent.com/longhorn/longhorn/v1.12.0/deploy/longhorn.yaml
+  - settings.yaml
