@@ -1,0 +1,36 @@
+# Dev/staging's Postgres volumes use this instead of the default `longhorn`
+# StorageClass (numberOfReplicas: 3). Neither environment needs
+# storage-level redundancy — see overlays/{dev,staging}/postgres-cluster.yaml's
+# own "no HA, no backup" reasoning — so replicating each volume 3x is pure
+# overhead. On this repo's small test-rig nodes it was more than
+# overhead: with 3 replicas, a volume attach means syncing/starting 3
+# replica engines before the primary can come up, and that repeatedly took
+# longer than the CNPG initdb Job's retry/backoff window tolerated — the Job
+# kept getting rescheduled mid-attach ("no matching attachment ticket" in
+# longhorn-manager's logs), tearing down the in-progress attach and
+# restarting the whole cycle, burning through backoffLimit before Postgres
+# ever finished initializing. A single replica attaches much faster.
+#
+# Production stays on the default `longhorn` StorageClass — it genuinely
+# needs the storage-level redundancy (see production's own
+# postgres-cluster.yaml comment on its two layers of redundancy).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-single-replica
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  # Everything below matches the default `longhorn` StorageClass Longhorn's
+  # own install manifest creates — only numberOfReplicas differs (1 vs 3).
+  numberOfReplicas: "1"
+  staleReplicaTimeout: "30"
+  fromBackup: ""
+  fsType: "ext4"
+  dataLocality: "disabled"
+  unmapMarkSnapChainRemoved: "ignored"
+  disableRevisionCounter: "true"
+  dataEngine: "v1"
+  backupTargetName: "default"

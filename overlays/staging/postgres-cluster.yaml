@@ -13,14 +13,22 @@ spec:
     nodeSelector:
       env: staging
   storage:
-    storageClass: longhorn
+    # longhorn-single-replica, not the default `longhorn` (3 replicas) —
+    # staging doesn't need storage-level redundancy any more than it needs
+    # CNPG-level HA (see this file's header), and on this repo's small
+    # test-rig nodes, 3-way replica sync made every volume attach slow
+    # enough to race the initdb Job's own retry/backoff window, tearing
+    # down in-progress attaches over and over ("no matching attachment
+    # ticket" in longhorn-manager's logs) until backoffLimit was exhausted.
+    # See cluster-operators/longhorn/storageclass-single-replica.yaml.
+    storageClass: longhorn-single-replica
     # 1Gi — staging holds no real data, and this repo's test-rig nodes have
     # very little raw disk headroom (confirmed against a real cluster:
     # Longhorn couldn't schedule a replica for a 5Gi request — "precheck new
     # replica failed: insufficient storage" — even with its scheduling
     # threshold already lowered, because the nodes genuinely didn't have 5Gi
-    # free). `allowVolumeExpansion: true` on the longhorn StorageClass means
-    # this can be grown later without recreating the Cluster if needed.
+    # free). `allowVolumeExpansion: true` means this can be grown later
+    # without recreating the Cluster if needed.
     size: 1Gi
   bootstrap:
     initdb:

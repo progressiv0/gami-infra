@@ -13,3 +13,4 @@
 resources:
   - https://raw.githubusercontent.com/longhorn/longhorn/v1.12.0/deploy/longhorn.yaml
   - settings.yaml
+  - storageclass-single-replica.yaml
