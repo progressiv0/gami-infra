@@ -1,16 +1,16 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Empty until an operator runs the Phase 3a bootstrap runbook against the
-# dev namespace — independently-generated secrets from staging/production,
-# never copied over. Add each generated SealedSecret file here:
-#   resources:
-#     - gami-secrets.yaml      # NEXTAUTH_SECRET only — gami-api's
-#                                 GAMI_JWT_SECRET/GAMI_API_TOKEN are gone
-#                                 along with gami-api itself (see README.md)
-#     - gami-smtp.yaml
+# gami-secrets.yaml holds NEXTAUTH_SECRET only — gami-api's
+# GAMI_JWT_SECRET/GAMI_API_TOKEN are gone along with gami-api itself (see
+# README.md). Independently generated from staging/production's, never
+# copied over.
+#
+# gami-smtp.yaml not sealed yet — add it here once real SMTP credentials
+# are provided (see README-dev.md's secrets bootstrap section).
 #
 # No gami-signing-key.yaml — institution signing keys are per-institution
 # application data now (managed in Postgres, see gami-app's
 # src/lib/institution-keys.ts), not a single cluster-wide Secret.
-resources: []
+resources:
+  - gami-secrets.yaml
