@@ -33,6 +33,13 @@ spec:
               containerPort: 8025
           securityContext:
             runAsNonRoot: true
+            # axllent/mailpit's image defaults to root (UID 0) — without an
+            # explicit runAsUser, runAsNonRoot: true fails every container
+            # start ("container has runAsNonRoot and image will run as
+            # root"), confirmed against a real cluster. Both of Mailpit's
+            # ports (1025, 8025) are unprivileged, so any non-root UID works;
+            # 1000 is an arbitrary but conventional choice.
+            runAsUser: 1000
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
