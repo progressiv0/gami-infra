@@ -56,6 +56,16 @@ kubectl create secret generic gami-smtp \
   > overlays/dev/sealed-secrets/gami-smtp.yaml
 ```
 
+**`gami-postgres-app` is already sealed and committed**
+(`overlays/dev/sealed-secrets/gami-postgres-app.yaml`) — dev's Postgres
+(`overlays/dev/postgres.yaml`) is a plain Deployment, not CNPG, so there's
+no operator to auto-generate it the way there used to be; it holds
+`POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD` (the postgres container's
+own bootstrap env vars) plus `uri` (what `gami-webapp`/`gami-migrate`
+actually read via `secretKeyRef`). Only re-seal it if you need to rotate
+dev's Postgres password — see staging's README for the equivalent commands
+if you're doing this for a different environment.
+
 No institution signing key secret — those are per-institution application
 data in Postgres now (`gami-app`'s `src/lib/institution-keys.ts`), not a
 cluster Secret.
@@ -65,6 +75,7 @@ cluster Secret.
 resources:
   - gami-secrets.yaml
   - gami-smtp.yaml
+  - gami-postgres-app.yaml
 ```
 
 ```bash
@@ -129,8 +140,9 @@ collisions) are documented with exact symptoms and fixes in
 [README-local.md](README-local.md)'s **Gotchas** section — read that first.
 
 Dev-specific things to check:
-- Dev's Postgres (`overlays/dev/postgres-cluster.yaml`) is a **single
-  instance with no backup**, same as staging — intentional, not a bug.
+- Dev's Postgres (`overlays/dev/postgres.yaml`, a plain
+  `postgres:16-alpine` Deployment — no CNPG) is a **single instance with no
+  backup**, same as staging — intentional, not a bug.
 - Since ArgoCD itself prefers the same node dev's workloads do
   (`env=dev`), a resource-starved dev node can affect ArgoCD's own
   responsiveness, not just dev's app pods — check `kubectl top node

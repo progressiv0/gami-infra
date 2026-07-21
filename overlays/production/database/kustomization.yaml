@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gami
+
+# Split out from overlays/production/webapp/ deliberately: this lets
+# production's Postgres (CNPG Cluster + S3 backup) deploy and sync via its
+# own ArgoCD Application (argocd/app-gami-production-database.yaml)
+# independently of gami-webapp/gami-migrate, which aren't ready to deploy
+# yet. Same destination namespace as webapp/ (gami) — safe, since a CNPG
+# Cluster and a Deployment/Service/Ingress never collide on resource names.
+resources:
+  - postgres-cluster.yaml

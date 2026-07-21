@@ -7,6 +7,16 @@ production is the environment that gets real redundancy, with `gami-webapp`
 spread across all 3 nodes (not just the dedicated big one) and the only
 Postgres cluster with HA + S3 backup.
 
+**Production is split into two separate ArgoCD Applications**:
+`overlays/production/database/` (CNPG Postgres + S3 backup) and
+`overlays/production/webapp/` (`gami-webapp`/`gami-migrate`). The database
+is deployed now, ahead of the web app, since the app's own branches/images
+aren't ready yet — `argocd_gami_environments` (`ansible/roles/argocd/defaults/main.yml`)
+defaults to `production-database` only. Everything below that's specific to
+`gami-webapp`/`gami-migrate` (release process, secrets, verifying a
+deploy) doesn't apply yet — it's here for when `production-webapp` gets
+added to that list.
+
 Read [README-staging.md](README-staging.md) too if you haven't bootstrapped
 the cluster yet — **cluster bootstrap (Terraform + Ansible + operator
 installs) is done once for the whole cluster, not once per environment.** If
@@ -73,7 +83,7 @@ kubectl create secret generic gami-secrets \
   --from-literal=NEXTAUTH_SECRET="$NEXTAUTH_SECRET" \
   --dry-run=client -o yaml \
   | kubeseal --cert /tmp/sealed-secrets-cert.pem -o yaml \
-  > overlays/production/sealed-secrets/gami-secrets.yaml
+  > overlays/production/webapp/sealed-secrets/gami-secrets.yaml
 
 # Real SMTP credential from your email provider
 kubectl create secret generic gami-smtp \
@@ -82,7 +92,7 @@ kubectl create secret generic gami-smtp \
   --from-literal=SMTP_PASS="<real SMTP password>" \
   --dry-run=client -o yaml \
   | kubeseal --cert /tmp/sealed-secrets-cert.pem -o yaml \
-  > overlays/production/sealed-secrets/gami-smtp.yaml
+  > overlays/production/webapp/sealed-secrets/gami-smtp.yaml
 ```
 
 No `gami-signing-key` secret — institution signing keys are per-institution
@@ -90,7 +100,7 @@ application data managed in Postgres (`gami-app`'s
 `src/lib/institution-keys.ts`), created through the app's own admin UI/API,
 not sealed at the infra level.
 
-Add the filenames to `overlays/production/sealed-secrets/kustomization.yaml`
+Add the filenames to `overlays/production/webapp/sealed-secrets/kustomization.yaml`
 (starts as `resources: []`):
 
 ```yaml
@@ -100,15 +110,15 @@ resources:
 ```
 
 ```bash
-git add overlays/production/sealed-secrets/
+git add overlays/production/webapp/sealed-secrets/
 git commit -m "chore: seal production secrets"
 git push
 ```
 
 **Before the first real deploy**, also replace the SMTP placeholder values
-baked into `overlays/production/kustomization.yaml`'s `configMapGenerator`
-(`SMTP_HOST=smtp.example.com` etc. are literally placeholders in the
-committed file) with real values.
+baked into `overlays/production/webapp/kustomization.yaml`'s
+`configMapGenerator` (`SMTP_HOST=smtp.example.com` etc. are literally
+placeholders in the committed file) with real values.
 
 ### Set up production Postgres backups
 
@@ -116,17 +126,25 @@ Production is the **only** environment that backs up to S3 (dev/staging
 deliberately don't — see [README.md](README.md)'s "Node topology" section).
 Full setup steps, the on-demand backup command, and how to verify a restore
 actually works are in
-[overlays/production/README-backup.md](overlays/production/README-backup.md)
-— do this before your first real production sync, not after.
+[overlays/production/database/README-backup.md](overlays/production/database/README-backup.md)
+— do this before your first real production sync, not after. This
+includes creating the `gami-prod-backup` Object Storage bucket (shared with
+Terraform's own state, under a separate key prefix — see
+`terraform/backend.tf`'s comment) and the `gami-postgres-backup-creds`
+Secret.
 
-### Apply the production Application
+### Apply the production database Application
+
+This is the part that's actually deployed today — `gami-webapp`/
+`gami-migrate` (`app-gami-production-webapp.yaml`) come later, see the intro
+above.
 
 ```bash
-kubectl apply -f argocd/app-gami-production.yaml
-kubectl get application gami-production -n argocd -w
+kubectl apply -f argocd/app-gami-production-database.yaml
+kubectl get application gami-production-database -n argocd -w
 ```
 
-Watch for the CNPG `Cluster` (`overlays/production/postgres-cluster.yaml`)
+Watch for the CNPG `Cluster` (`overlays/production/database/postgres-cluster.yaml`)
 to provision all 3 Postgres instances, and the `ObjectStore`/
 `ScheduledBackup` to come up healthy:
 ```bash
@@ -134,6 +152,17 @@ kubectl get cluster gami-postgres -n gami
 kubectl get objectstore -n gami
 kubectl get scheduledbackup -n gami
 ```
+
+### Later: bring the web app online
+
+Once `gami-app`'s branches/images are ready:
+1. Complete the secrets bootstrap above (`gami-secrets`/`gami-smtp`) and the
+   image pull secret, if not already done.
+2. Add `production-webapp` to `argocd_gami_environments` in
+   `ansible/roles/argocd/defaults/main.yml`, commit, push.
+3. Re-run the `argocd` role (or `kubectl apply -f
+   argocd/app-gami-production-webapp.yaml` directly for an immediate test).
+4. Continue with "Deploying a production release" below.
 
 ---
 
@@ -153,11 +182,15 @@ flow, end to end:
    these tools).
 3. That same workflow checks out **this repo** (`gami-infra`) using a
    scoped `INFRA_REPO_TOKEN`, runs `kustomize edit set image` inside
-   `overlays/production/`, commits, and pushes.
-4. ArgoCD (already watching `overlays/production` via
-   `argocd/app-gami-production.yaml`) detects the diff and syncs.
-5. The `gami-migrate` PreSync hook runs to completion before `gami-webapp`
-   rolls out.
+   `overlays/production/webapp/`, commits, and pushes.
+4. ArgoCD (watching `overlays/production/webapp` via
+   `argocd/app-gami-production-webapp.yaml`) detects the diff and syncs.
+5. `gami-migrate` (sync-wave `0`) runs to completion before `gami-webapp`
+   (sync-wave `1`) rolls out — plain `argocd.argoproj.io/sync-wave`
+   ordering, not a PreSync hook (see `base/gami-migrate-job.yaml`'s own
+   comment for why: an earlier PreSync-hook version of this Job could never
+   see `gami-config`, since hooks run in a phase that completes entirely
+   before any Sync-phase resource is even attempted).
 6. k3s performs a rolling update, one pod at a time, gated by the readiness
    probe. `gami-webapp` runs 3 replicas spread across all 3 nodes via
    podAntiAffinity (not just the dedicated big node) — losing any one node
@@ -168,7 +201,7 @@ manually as a one-off before that automation is wired up, do the equivalent
 by hand:
 
 ```bash
-cd gami-infra/overlays/production
+cd gami-infra/overlays/production/webapp
 kustomize edit set image \
   ghcr.io/authenticmemory/gami-webapp=ghcr.io/authenticmemory/gami-webapp:<release-tag> \
   ghcr.io/authenticmemory/gami-webapp-migrate=ghcr.io/authenticmemory/gami-webapp:<release-tag>-migrate
@@ -190,7 +223,7 @@ should move production's image tags.
 
 ```bash
 kubectl get pods -n gami -o wide
-kubectl get application gami-production -n argocd
+kubectl get application gami-production-webapp -n argocd
 ```
 
 Confirm all 3 `gami-webapp` pods landed on different nodes (that's the whole
@@ -267,7 +300,7 @@ maintenance window, not casually against live traffic:
 ```bash
 # Regenerate, re-seal (same commands as initial bootstrap, fresh values),
 # commit the new ciphertext:
-git add overlays/production/sealed-secrets/gami-secrets.yaml
+git add overlays/production/webapp/sealed-secrets/gami-secrets.yaml
 git commit -m "chore: rotate production secrets"
 git push
 ```
@@ -287,7 +320,7 @@ Since deploys are just git commits, rolling back is `git revert` on the
 commit that bumped the image tag, pushed the same way:
 
 ```bash
-git log --oneline -- overlays/production/kustomization.yaml
+git log --oneline -- overlays/production/webapp/kustomization.yaml
 git revert <bad-deploy-commit-sha>
 git push
 ```
@@ -312,9 +345,9 @@ Production-specific things to check first:
 - Confirm you're actually looking at the `gami` namespace, not
   `gami-staging`/`gami-dev` — easy to mix up since all three run on the same
   cluster.
-- A stuck `gami-migrate` Job blocks the entire rollout by design (PreSync
-  hook) — check `kubectl logs job/gami-migrate -n gami` before assuming
-  `gami-webapp` itself is broken.
+- A stuck `gami-migrate` Job blocks the entire rollout by design
+  (sync-wave `0` before `gami-webapp`'s wave `1`) — check `kubectl logs
+  job/gami-migrate -n gami` before assuming `gami-webapp` itself is broken.
 - If `letsencrypt-production` fails to issue (rate-limited, DNS not
   pointing at the cluster yet, etc.), Traefik falls back to a self-signed
   default cert — a browser cert warning on the production hostname means
@@ -327,4 +360,4 @@ Production-specific things to check first:
   a replica, which is worth knowing about even though it's not a hard
   failure.
 - Backup-specific issues (missing `ObjectStore`, credentials, plugin not
-  installed) — see [overlays/production/README-backup.md](overlays/production/README-backup.md).
+  installed) — see [overlays/production/database/README-backup.md](overlays/production/database/README-backup.md).

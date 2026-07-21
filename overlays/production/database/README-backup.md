@@ -43,10 +43,11 @@ reliable, so there's nothing to protect beyond redeploying).
    (`base/README-image-pull-secret.md`) — a long-lived storage credential,
    not an app secret with its own rotation story.
 
-3. Confirm the bucket (`gami-tfstate`) actually allows the prefix
-   `postgres-backups/production/` to be written — it's the same bucket as
-   Terraform state, just a different key prefix, so no new bucket creation
-   is needed, only confirming the credentials above have write access to it.
+3. Confirm the bucket (`gami-prod-backup`) actually allows the prefix
+   `postgres-backups/` to be written — it's the same bucket as Terraform
+   state (which lives under its own `tf-infrastructure/` prefix, see
+   `terraform/backend.tf`), so no new bucket creation is needed, only
+   confirming the credentials above have write access to it.
 
 ## Triggering an on-demand backup
 

@@ -318,7 +318,8 @@ Symptom: an Application's sync operation never finishes — `kubectl get
 application <name> -n argocd -o jsonpath='{.status.operationState.message}'`
 shows `waiting for healthy state of networking.k8s.io/Ingress/<name>`
 indefinitely, blocking every sync-wave after the Ingress (in this repo,
-that means `gami-migrate` and the CNPG `Cluster` never even get created).
+that means `gami-migrate` and the rest of the Deployment never even get
+created).
 
 Cause: ArgoCD's built-in health check for `Ingress` expects
 `.status.loadBalancer.ingress` to be populated — the IP/hostname a cloud
@@ -371,15 +372,19 @@ back to the committed `letsencrypt-staging`/`letsencrypt-production` value
 on its next sync; that's expected and fine once the Ingress health check
 fix above means it no longer blocks anything either way.
 
-### Gotcha: CNPG Cluster gets wedged after a storage-related failure
+### Gotcha: CNPG Cluster gets wedged after a storage-related failure (production only)
 
-If a Postgres `Cluster`'s `initdb` Job hits `BackoffLimitExceeded` for any
-storage-related reason (PVC stuck pending, node out of disk, etc.), CNPG can
-get its own state tracking wedged even after the underlying cause is fixed
-(`STATUS: Cluster is unrecoverable and needs manual intervention`). Deleting
-just the stuck pod or Job usually isn't enough — delete the whole `Cluster`
-object (and its PVC, if orphaned: `kubectl delete pvc <name> -n <namespace>`)
-and let CNPG recreate it from scratch.
+Dev and staging's Postgres is a plain Deployment now, not CNPG (see
+[README.md](README.md)'s "Node topology" section) — this gotcha only
+applies if you're testing production's database overlay
+(`overlays/production/database/`) locally. If a Postgres `Cluster`'s
+`initdb` Job hits `BackoffLimitExceeded` for any storage-related reason
+(PVC stuck pending, node out of disk, etc.), CNPG can get its own state
+tracking wedged even after the underlying cause is fixed (`STATUS: Cluster
+is unrecoverable and needs manual intervention`). Deleting just the stuck
+pod or Job usually isn't enough — delete the whole `Cluster` object (and
+its PVC, if orphaned: `kubectl delete pvc <name> -n <namespace>`) and let
+CNPG recreate it from scratch.
 
 ---
 
@@ -430,37 +435,44 @@ the port exposed): `kubectl port-forward svc/argocd-server -n argocd
 ## Deploying the app itself locally
 
 The `argocd` role already applies this repo's `argocd/*.yaml` Application
-manifests, which point at `overlays/{dev,staging,production}` in **this
-repo's real GitHub remote** — not useful for a local test cluster unless you
-actually want it tracking the real repo.
+manifests, which point at `overlays/dev` (local playbooks only enable
+`dev` — see `argocd_gami_environments`) in **this repo's real GitHub
+remote** — not useful for a local test cluster unless you actually want it
+tracking the real repo.
 
 For genuinely local app testing, either:
 - Point a test `Application` at your local repo checkout / a fork, with your
   own hostnames, instead of using the committed `argocd/app-*.yaml` files
   as-is; or
-- Skip ArgoCD for this and `kubectl apply -k overlays/dev` (or `staging`/
-  `production`) directly against your local cluster to render and apply the
-  Kustomize output once, without GitOps auto-sync.
+- Skip ArgoCD for this and `kubectl apply -k overlays/dev` directly against
+  your local cluster to render and apply the Kustomize output once, without
+  GitOps auto-sync. (`overlays/staging`, `overlays/production/database`,
+  `overlays/production/webapp` also work the same way if you want to test
+  one of those locally instead.)
 
 Either way, remember the app itself needs:
 - `ghcr-pull-secret` created manually (see
   `base/README-image-pull-secret.md`) — nothing pulls without it.
-- **cert-manager, the CloudNativePG operator, and Sealed
-  Secrets** — if `argocd/`'s manifests were applied (either via the
-  `argocd` role or by hand), these install themselves automatically
-  through `argocd/app-cluster-operators.yaml` (see [README.md](README.md)'s
+- **cert-manager and Sealed Secrets** always; **the CloudNativePG
+  operator** only if you're testing `overlays/production/database`
+  specifically (dev/staging use a plain Postgres Deployment, no operator
+  needed — see [README.md](README.md)'s "Node topology" section). If
+  `argocd/`'s manifests were applied (either via the `argocd` role or by
+  hand), these install themselves automatically through
+  `argocd/app-cluster-operators.yaml` (see [README.md](README.md)'s
   `cluster-operators/` section) — no separate step needed. If you skipped
   ArgoCD entirely and only ran `kubectl apply -k overlays/...` directly,
   you'll need to apply `cluster-operators/cert-manager`,
-  `cluster-operators/cnpg`, and `cluster-operators/sealed-secrets` yourself
-  the same way (`kubectl apply -k cluster-operators/cnpg --server-side` —
-  CNPG's CRDs are too large for client-side apply, see that Kustomization's
-  own comments). Postgres storage itself needs nothing extra — every
-  `postgres-cluster.yaml` uses k3s's bundled `local-path` storage class.
+  `cluster-operators/cnpg` (only if testing production's database), and
+  `cluster-operators/sealed-secrets` yourself the same way (`kubectl apply
+  -k cluster-operators/cnpg --server-side` — CNPG's CRDs are too large for
+  client-side apply, see that Kustomization's own comments). Postgres
+  storage itself needs nothing extra either way — everything uses k3s's
+  bundled `local-path` storage class.
 - **The CNPG Barman Cloud plugin** — only relevant if testing production's
   S3 backup locally; also GitOps-managed (`cluster-operators/cnpg-barman-plugin/`),
   applied automatically alongside cert-manager/CNPG. See
-  `overlays/production/README-backup.md`.
+  `overlays/production/database/README-backup.md`.
 - **The Sealed Secrets controller** — also GitOps-managed now
   (`cluster-operators/sealed-secrets/`), applied automatically alongside
   the others. It lands in `kube-system`, not its own namespace — the

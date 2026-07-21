@@ -1,10 +1,14 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Split out from overlays/production/database/ deliberately — see that
+# directory's kustomization.yaml comment. This half is gami-webapp/
+# gami-migrate only; Postgres lives entirely in the sibling database/
+# directory/Application now. Deployed later, once the app itself is ready
+# (see argocd/app-gami-production-webapp.yaml's own comment).
 resources:
-  - ../../base
+  - ../../../base
   - sealed-secrets
-  - postgres-cluster.yaml
 
 # base/ already reflects production's hostnames (app.authenticmemory.org /
 # verify.authenticmemory.org) and cert-manager issuer (letsencrypt-production)

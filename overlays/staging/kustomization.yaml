@@ -9,7 +9,7 @@ namespace: gami-staging
 resources:
   - ../../base
   - sealed-secrets
-  - postgres-cluster.yaml
+  - postgres.yaml
 
 # See overlays/production/kustomization.yaml for why this is disabled.
 generatorOptions:

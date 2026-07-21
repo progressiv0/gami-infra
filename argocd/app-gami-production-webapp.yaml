@@ -1,0 +1,26 @@
+# Deliberately NOT yet added to ansible/roles/argocd/defaults/main.yml's
+# argocd_gami_environments list — this file exists so it's ready to go, but
+# gami-webapp/gami-migrate don't get deployed until the app itself is ready
+# (see overlays/production/database/'s own Application, which IS deployed
+# now). Bring this online later by adding "production-webapp" to that list
+# — no other change needed at that point.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gami-production-webapp
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/progressiv0/gami-infra
+    targetRevision: main
+    path: overlays/production/webapp
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gami
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

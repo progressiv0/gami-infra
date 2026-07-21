@@ -6,6 +6,13 @@ kind: Kustomization
 # README.md). Independently generated from staging/production's, never
 # copied over.
 #
+# gami-postgres-app.yaml — since dev's Postgres is now a plain Deployment
+# (../postgres.yaml), not CNPG, there's no operator to auto-generate this
+# Secret anymore. Holds POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD (the
+# postgres container's own bootstrap env vars) plus `uri` (the full
+# connection string gami-webapp/gami-migrate read via secretKeyRef) — one
+# Secret, both purposes.
+#
 # gami-smtp.yaml not sealed yet — add it here once real SMTP credentials
 # are provided (see README-dev.md's secrets bootstrap section).
 #
@@ -14,3 +21,4 @@ kind: Kustomization
 # src/lib/institution-keys.ts), not a single cluster-wide Secret.
 resources:
   - gami-secrets.yaml
+  - gami-postgres-app.yaml

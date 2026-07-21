@@ -5,18 +5,24 @@ argocd_wait_retries: 30
 argocd_wait_delay: 10
 
 # Which per-environment app-gami-*.yaml Applications to apply. Default
-# matches the real Hetzner (hcloud) production cluster: staging + production
-# only — dev is deliberately NOT part of the real cluster, it's a
-# local-test-only concept. Local playbooks (local.yml, alpine-local.yml)
-# override this to just ["dev"]: running staging/production on a handful of
-# small local test VMs (or dev alongside them) is what caused this repo's
-# repeated disk-pressure/Longhorn-scheduling/OOM problems this session —
-# local rigs only need dev to exercise the infrastructure itself.
+# matches the real Hetzner (hcloud) production cluster — dev is deliberately
+# NOT part of the real cluster, it's a local-test-only concept. Local
+# playbooks (local.yml, alpine-local.yml) override this to just ["dev"]:
+# running staging/production on a handful of small local test VMs (or dev
+# alongside them) is what caused this repo's repeated disk-pressure/OOM
+# problems this session — local rigs only need dev to exercise the
+# infrastructure itself.
 # app-cluster-operators.yaml and app-gami-cluster-wide.yaml are NOT
 # per-environment and are always applied regardless of this list.
+#
+# "production-database" (not "production"): production's Postgres
+# (overlays/production/database/, HA + S3 backup) is deployed now, ahead of
+# its web app — the app's branches/images aren't ready yet.
+# "production-webapp" (overlays/production/webapp/) is deliberately left
+# out until then; add it to this list once ready, no other change needed.
 argocd_gami_environments:
   - staging
-  - production
+  - production-database
 
 # Dedicated Traefik entrypoint for the ArgoCD UI/API — kept off 80/443,
 # which are reserved for gami-webapp. Must match the port hardcoded in

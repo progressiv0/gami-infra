@@ -97,22 +97,40 @@ Kubernetes node label at k3s install time (`--node-label env=...` in
   real redundancy: losing any single node — even the dedicated big one —
   still leaves 2 of 3 replicas serving.
 
-**Postgres is genuinely per-environment**, not one shared cluster:
-- `overlays/dev/postgres-cluster.yaml` and `overlays/staging/postgres-cluster.yaml`
-  are both single-instance CloudNativePG `Cluster`s, pinned to their own
-  node, with **no backup configuration** — losing that pod just means
-  recreating it, which matches dev/staging not needing high reliability.
-- `overlays/production/postgres-cluster.yaml` is the only one with real HA
-  (3 instances spread across all 3 nodes via `topologyKey:
-  kubernetes.io/hostname`) **and** the only one that backs up to S3 (nightly
-  scheduled + on-demand, via the CNPG Barman Cloud plugin — see
-  `overlays/production/README-backup.md`). Node-loss tolerance comes from
-  CloudNativePG itself (streaming replication, automatic failover) — each
-  instance gets its own independent PV on its own node, so there's no need
-  for a replicated block-storage layer (e.g. Longhorn) underneath as well;
-  that would just be a second, redundant copy of the same guarantee. Total
-  loss of all instances is what the S3 backup is for. All three environments
-  use k3s's bundled `local-path` storage class for this reason.
+**Postgres is genuinely per-environment**, not one shared cluster — and,
+as of this repo's latest iteration, not one shared *technology* either:
+- `overlays/dev/postgres.yaml` and `overlays/staging/postgres.yaml` are
+  both **plain, unmanaged Postgres `Deployment`s** (official
+  `postgres:16-alpine` image + a PVC + a `Service` — no operator), pinned
+  to their own node, with **no backup configuration** — losing that pod
+  just means recreating it, which matches dev/staging not needing high
+  reliability. They dropped CloudNativePG entirely: since neither ever used
+  CNPG's HA/failover/declarative-backup features, the operator was pure
+  overhead. Both still expose the exact same `gami-postgres-app` Secret
+  contract (key `uri`) that `gami-webapp`/`gami-migrate` read via
+  `secretKeyRef` — those manifests don't know or care whether the Secret
+  was CNPG-generated or hand-sealed.
+- `overlays/production/database/postgres-cluster.yaml` is the only
+  environment still on **CloudNativePG**, with real HA (3 instances spread
+  across all 3 nodes via `topologyKey: kubernetes.io/hostname`) **and** S3
+  backup (nightly scheduled + on-demand, via the CNPG Barman Cloud plugin —
+  see `overlays/production/database/README-backup.md`). Node-loss tolerance
+  comes from CloudNativePG itself (streaming replication, automatic
+  failover) — each instance gets its own independent PV on its own node, so
+  there's no need for a replicated block-storage layer (e.g. Longhorn)
+  underneath as well; that would just be a second, redundant copy of the
+  same guarantee. Total loss of all instances is what the S3 backup is for.
+
+All three environments' Postgres PVCs use k3s's bundled `local-path`
+storage class regardless of which of the two technologies they run.
+
+**Production's database and webapp are deliberately two separate ArgoCD
+Applications** now (`overlays/production/database/` and
+`overlays/production/webapp/` — see the `argocd/` section below): the
+database is deployed today, ahead of the web app, since the app's own
+branches/images aren't ready yet. Bringing the webapp online later is just
+adding `production-webapp` to `argocd_gami_environments`
+(`ansible/roles/argocd/defaults/main.yml`) — no other change needed.
 
 ---
 
@@ -124,9 +142,11 @@ gami-infra/
 ├── ansible/             Cluster bootstrap + day-2 ops (all environments)
 ├── base/                 Kustomize base: the app's actual Kubernetes resources
 ├── overlays/
-│   ├── dev/               Per-environment Kustomize overlay + secrets + Postgres
-│   ├── staging/           Per-environment Kustomize overlay + secrets + Postgres
-│   └── production/        Per-environment Kustomize overlay + secrets + Postgres + S3 backup
+│   ├── dev/               Per-environment Kustomize overlay + secrets + plain Postgres
+│   ├── staging/           Per-environment Kustomize overlay + secrets + plain Postgres
+│   └── production/
+│       ├── database/       CNPG Postgres + S3 backup — own ArgoCD Application, deployed now
+│       └── webapp/          gami-webapp/gami-migrate — own ArgoCD Application, deployed later
 ├── cluster-wide/         Cluster-scoped resources shared by every environment
 ├── cluster-operators/    Third-party operators (cert-manager, CNPG, Sealed Secrets, backup plugin) — GitOps-managed, not manual
 │   └── apps/               Child ArgoCD Applications for the operators (App-of-Apps pattern)
@@ -225,18 +245,22 @@ Both overlays start here and layer environment-specific values on top.
 
 ### `overlays/{dev,staging,production}/` — per-environment configuration
 
-Each overlay is a full Kustomize `Kustomization` referencing `../../base`
-plus its own `sealed-secrets/` and its own `postgres-cluster.yaml`. What
-differs between them:
+Dev and staging are each a full Kustomize `Kustomization` referencing
+`../../base` plus their own `sealed-secrets/` and their own `postgres.yaml`
+(a plain Postgres Deployment — see "Node topology" above). Production is
+split into two sibling Kustomizations/ArgoCD Applications instead —
+`database/` (CNPG `Cluster` + S3 backup) and `webapp/` (`../../base` +
+`sealed-secrets/`) — so the database can deploy independently of the web
+app. What differs between the three environments:
 
 | | dev | staging | production |
 |---|---|---|---|
 | Namespace | `gami-dev` | `gami-staging` | `gami` |
 | Hostnames | `dev.authenticmemory.org`, `verify-dev.authenticmemory.org` | `staging.authenticmemory.org`, `verify-staging.authenticmemory.org` | `app.authenticmemory.org`, `verify.authenticmemory.org` |
 | TLS issuer | `letsencrypt-staging` (untrusted test certs) | `letsencrypt-staging` (untrusted test certs) | `letsencrypt-production` (real, browser-trusted certs) |
-| `gami-webapp` replicas | 1, soft nodeAffinity toward `env=dev` | 1, soft nodeAffinity toward `env=staging` | 3, podAntiAffinity spreads across all 3 nodes |
-| Postgres | 1 instance, pinned to the dev node, no backup | 1 instance, pinned to the staging node, no backup | 3 instances (HA) spread across all 3 nodes, nightly + on-demand S3 backup |
-| Secrets | `overlays/dev/sealed-secrets/` — independently generated | `overlays/staging/sealed-secrets/` — independently generated | `overlays/production/sealed-secrets/` — independently generated, never shared |
+| `gami-webapp` replicas | 1, soft nodeAffinity toward `env=dev` | 1, soft nodeAffinity toward `env=staging` | 3, podAntiAffinity spreads across all 3 nodes (`webapp/` Application — not yet enabled, see below) |
+| Postgres | plain `postgres:16-alpine` Deployment, pinned to the dev node, no backup | plain `postgres:16-alpine` Deployment, pinned to the staging node, no backup | CNPG, 3 instances (HA) spread across all 3 nodes, nightly + on-demand S3 backup (`database/` Application — deployed now) |
+| Secrets | `overlays/dev/sealed-secrets/` — independently generated | `overlays/staging/sealed-secrets/` — independently generated | `overlays/production/webapp/sealed-secrets/` — independently generated, never shared |
 
 All three share `generatorOptions.disableNameSuffixHash: true` — without it,
 Kustomize's default hash-suffixed ConfigMap name breaks every
@@ -266,15 +290,18 @@ its own ArgoCD Application.
 
 Third-party Kubernetes operators the app manifests depend on — cert-manager
 (for `ClusterIssuer`/`Certificate`), the CloudNativePG operator (for the
-`Cluster` CRD every `overlays/*/postgres-cluster.yaml` uses), the CNPG
-Barman Cloud plugin (production's S3 backup — see `overlays/production/README-backup.md`),
-and the Sealed Secrets controller (decrypts each overlay's
-`sealed-secrets/*.yaml` into real `Secret`s). Every `postgres-cluster.yaml`'s
-PVC uses k3s's own bundled `local-path` storage class — no separate storage
-operator needed, since CNPG's own multi-instance streaming replication (plus
-S3 backup for production) already covers node-loss and disaster recovery
-without a replicated block-storage layer underneath (see "Node topology"
-above for the fuller reasoning).
+`Cluster` CRD `overlays/production/database/postgres-cluster.yaml` uses —
+the *only* environment still on CNPG, see "Node topology" above), the CNPG
+Barman Cloud plugin (production's S3 backup — see
+`overlays/production/database/README-backup.md`), and the Sealed Secrets
+controller (decrypts each overlay's `sealed-secrets/*.yaml` into real
+`Secret`s). Every environment's Postgres PVC (CNPG-managed for production,
+plain `PersistentVolumeClaim` for dev/staging) uses k3s's own bundled
+`local-path` storage class — no separate storage operator needed, since
+CNPG's own multi-instance streaming replication (plus S3 backup) already
+covers production's node-loss and disaster recovery without a replicated
+block-storage layer underneath (see "Node topology" above for the fuller
+reasoning).
 
 **These are installed the same way as everything else in this repo: as
 ArgoCD `Application`s, not as a manual `kubectl apply` step or a separate
@@ -339,22 +366,32 @@ automatically the same way the app's own Kustomize manifests do, and
 
 ### `argocd/` — what ArgoCD watches
 
-Five top-level `Application` manifests (one of which, `app-cluster-operators.yaml`,
+Six top-level `Application` manifests (one of which, `app-cluster-operators.yaml`,
 is a parent whose own "resources" are 4 more child Applications defined under
-`cluster-operators/apps/` — see above), applied once during cluster bootstrap
-(by the `argocd` Ansible role, which does a plain `kubectl apply -f argocd/`
-— every file in this directory gets applied, no per-file wiring needed) and
-then self-managing from there (`syncPolicy.automated` with `prune: true,
-selfHeal: true` — ArgoCD both applies new commits and reverts manual cluster
-drift):
+`cluster-operators/apps/` — see above), applied during cluster bootstrap by
+the `argocd` Ansible role and then self-managing from there
+(`syncPolicy.automated` with `prune: true, selfHeal: true` — ArgoCD both
+applies new commits and reverts manual cluster drift).
 
-| File | Watches path | Destination namespace |
-|---|---|---|
-| `app-cluster-operators.yaml` | `cluster-operators/apps` (renders the 4 child Applications below) | `argocd` |
-| `app-gami-cluster-wide.yaml` | `cluster-wide` | `default` (irrelevant for cluster-scoped resources, required by the schema) |
-| `app-gami-dev.yaml` | `overlays/dev` | `gami-dev` |
-| `app-gami-staging.yaml` | `overlays/staging` | `gami-staging` |
-| `app-gami-production.yaml` | `overlays/production` | `gami` |
+**Not every file here gets applied automatically** — `app-cluster-operators.yaml`
+and `app-gami-cluster-wide.yaml` always do (they're cluster-wide, not
+per-environment), but the rest are gated by
+`ansible/roles/argocd/defaults/main.yml`'s `argocd_gami_environments` list,
+which the `argocd` role loops over to `kubectl apply -f app-gami-<item>.yaml`
+for each entry. The real hcloud cluster's default is `[staging,
+production-database]` — notably **not** `production-webapp`, which exists
+as a file but is deliberately left out until the web app itself is ready to
+deploy (bring it online later by just adding `production-webapp` to that
+list). Local playbooks override the list to `[dev]` only.
+
+| File | Watches path | Destination namespace | In default `argocd_gami_environments`? |
+|---|---|---|---|
+| `app-cluster-operators.yaml` | `cluster-operators/apps` (renders the 4 child Applications below) | `argocd` | always applied |
+| `app-gami-cluster-wide.yaml` | `cluster-wide` | `default` (irrelevant for cluster-scoped resources, required by the schema) | always applied |
+| `app-gami-dev.yaml` | `overlays/dev` | `gami-dev` | only via local playbooks' override |
+| `app-gami-staging.yaml` | `overlays/staging` | `gami-staging` | yes |
+| `app-gami-production-database.yaml` | `overlays/production/database` | `gami` | yes |
+| `app-gami-production-webapp.yaml` | `overlays/production/webapp` | `gami` | **not yet** — add when the app is ready |
 
 Child Applications rendered by `app-cluster-operators.yaml` (defined in
 `cluster-operators/apps/`, not directly in `argocd/`):

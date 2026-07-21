@@ -6,6 +6,15 @@ kind: Kustomization
 # README.md). Independently generated from dev/production's, never copied
 # over.
 #
+# gami-postgres-app.yaml not sealed yet — since staging's Postgres is now a
+# plain Deployment (../postgres.yaml), not CNPG, there's no operator to
+# auto-generate this Secret anymore. Add it here once sealed: needs
+# POSTGRES_DB=gami_staging, POSTGRES_USER=gami, a generated
+# POSTGRES_PASSWORD, and a matching `uri` connection string (see
+# overlays/dev/sealed-secrets/gami-postgres-app.yaml for the exact shape —
+# dev's was sealed directly against the local test cluster; staging's needs
+# sealing against the real hcloud cluster's own sealed-secrets cert).
+#
 # gami-smtp.yaml not sealed yet — add it here once real SMTP credentials
 # are provided (see README-staging.md's secrets bootstrap section).
 #

@@ -1,0 +1,99 @@
+# Dev's own single-instance Postgres — a plain, unmanaged Postgres
+# Deployment (no CNPG operator). Dev doesn't need HA or backup (see
+# README.md's "Node topology" section: "dev/staging don't need high
+# reliability"), and it turns out it doesn't need CNPG's operator
+# complexity either, since none of CNPG's actual value (streaming
+# replication, failover, declarative backup) was ever going to be used
+# here. Losing this pod just means recreating it, same as any other
+# dev-environment throwaway state.
+#
+# Same secretKeyRef contract gami-webapp/gami-migrate already expect
+# (`gami-postgres-app`, key `uri` — see base/gami-webapp/deployment.yaml,
+# base/gami-migrate-job.yaml) — they don't care whether that Secret was
+# CNPG-generated or hand-sealed, so no changes needed there. What IS new:
+# since there's no operator to auto-generate it, `gami-postgres-app` must
+# be created and sealed by hand (see overlays/dev/sealed-secrets/'s own
+# comment) before this can actually come up.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gami-postgres
+  labels:
+    app: gami-postgres
+spec:
+  replicas: 1
+  strategy:
+    # Two Postgres processes must never write to the same PVC at once — a
+    # rolling update would briefly run old+new together. Recreate tears the
+    # old pod down first.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gami-postgres
+  template:
+    metadata:
+      labels:
+        app: gami-postgres
+    spec:
+      # Pinned to the dev node — it's the only place dev's webapp/api run
+      # too (see the nodeAffinity patch in kustomization.yaml), so keep the
+      # database physically alongside them rather than letting the
+      # scheduler place it anywhere.
+      nodeSelector:
+        env: dev
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            # POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD — the official
+            # image's own first-run bootstrap variables. The same Secret
+            # also carries a `uri` key for gami-webapp/gami-migrate, which
+            # this container just ignores.
+            - secretRef:
+                name: gami-postgres-app
+          volumeMounts:
+            # subPath avoids the official image's entrypoint complaining
+            # about a stray lost+found/ directory in a fresh ext4 PVC's
+            # mount root.
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "gami"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "gami"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: gami-postgres-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gami-postgres-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gami-postgres
+spec:
+  selector:
+    app: gami-postgres
+  ports:
+    - port: 5432
+      targetPort: postgres

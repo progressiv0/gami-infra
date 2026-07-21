@@ -168,12 +168,12 @@ kubectl patch application cluster-operators -n argocd --type merge \
   -p '{"operation":{"sync":{"revision":"HEAD"},"initiatedBy":{"username":"admin"}}}'
 ```
 
-Postgres storage needs no separate operator — every `postgres-cluster.yaml`
-uses k3s's own bundled `local-path` storage class, since CNPG's
-multi-instance streaming replication (plus S3 backup for production)
-already covers node-loss and disaster recovery without a replicated
-block-storage layer underneath (see [README.md](README.md)'s "Node
-topology" section).
+Staging's Postgres (`overlays/staging/postgres.yaml`) doesn't use CNPG at
+all — it's a plain `postgres:16-alpine` Deployment, since staging never
+needed CNPG's HA/backup features (see [README.md](README.md)'s "Node
+topology" section). CNPG is only relevant here because **production**
+still uses it (`overlays/production/database/postgres-cluster.yaml`) —
+everything's on k3s's own bundled `local-path` storage class either way.
 
 **Sealed Secrets lands in `kube-system`, not its own namespace** — the
 upstream `controller.yaml` hardcodes that namespace on every resource it
@@ -233,6 +233,21 @@ kubectl create secret generic gami-smtp \
   --dry-run=client -o yaml \
   | kubeseal --cert /tmp/sealed-secrets-cert.pem -o yaml \
   > overlays/staging/sealed-secrets/gami-smtp.yaml
+
+# gami-postgres-app — staging's Postgres (overlays/staging/postgres.yaml)
+# is a plain Deployment, not CNPG, so there's no operator to auto-generate
+# this Secret. Needs both the postgres container's own bootstrap env vars
+# AND the uri gami-webapp/gami-migrate read via secretKeyRef.
+POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9')
+kubectl create secret generic gami-postgres-app \
+  --namespace gami-staging \
+  --from-literal=POSTGRES_DB=gami_staging \
+  --from-literal=POSTGRES_USER=gami \
+  --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+  --from-literal=uri="postgresql://gami:${POSTGRES_PASSWORD}@gami-postgres:5432/gami_staging?sslmode=disable" \
+  --dry-run=client -o yaml \
+  | kubeseal --cert /tmp/sealed-secrets-cert.pem -o yaml \
+  > overlays/staging/sealed-secrets/gami-postgres-app.yaml
 ```
 
 Institution signing keys are **not** a cluster secret at all — they're
@@ -240,13 +255,14 @@ per-institution application data managed in Postgres (`gami-app`'s
 `src/lib/institution-keys.ts`), created through the app's own UI/API, not
 sealed here.
 
-Then add both filenames to `overlays/staging/sealed-secrets/kustomization.yaml`'s
+Then add all three filenames to `overlays/staging/sealed-secrets/kustomization.yaml`'s
 `resources:` list (it starts empty), commit, and push:
 
 ```yaml
 resources:
   - gami-secrets.yaml
   - gami-smtp.yaml
+  - gami-postgres-app.yaml
 ```
 
 ```bash
@@ -362,7 +378,11 @@ Staging-specific things to check first:
 - `ghcr-pull-secret` exists in the `gami-staging` namespace specifically —
   it's namespace-scoped, so it won't help if it was only created in `gami`
   (production's) or `gami-dev`.
-- Staging's Postgres (`overlays/staging/postgres-cluster.yaml`) is a
-  **single instance with no backup** — that's intentional (staging doesn't
-  need high reliability), not a bug. Don't expect it to survive losing the
-  staging node; just re-sync if that happens.
+- Staging's Postgres (`overlays/staging/postgres.yaml`, a plain
+  `postgres:16-alpine` Deployment — no CNPG) is a **single instance with no
+  backup** — that's intentional (staging doesn't need high reliability),
+  not a bug. Don't expect it to survive losing the staging node; just
+  re-sync if that happens. If it's stuck `CreateContainerConfigError` or
+  the Deployment can't start, check whether `gami-postgres-app` has
+  actually been sealed yet (see `overlays/staging/sealed-secrets/kustomization.yaml`'s
+  comment) — there's no CNPG operator anymore to auto-generate it.

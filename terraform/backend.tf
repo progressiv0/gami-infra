@@ -2,16 +2,27 @@
 # so `terraform apply` from a GitHub Actions workflow_dispatch runner (a
 # fresh checkout every time) still sees the real state.
 #
-# The bucket ("gami-tfstate") must be created once, out of band, before the
-# first `terraform init` — Terraform won't create its own state bucket.
+# The bucket ("gami-prod-backup") must be created once, out of band, before
+# the first `terraform init` — Terraform won't create its own state bucket.
+# Shared with production's CNPG S3 backups
+# (overlays/production/database/postgres-cluster.yaml's ObjectStore), under
+# its own key prefix so state and backup data stay clearly separated.
 #
 # Credentials (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, actually Hetzner
 # Object Storage access keys) are passed as env vars at init/apply time —
 # never committed here.
+#
+# NOTE: this bucket was renamed from "gami-backup" (key was
+# "infra/terraform.tfstate") to "gami-prod-backup" (key
+# "tf-infrastructure/terraform.tfstate"). Changing a Terraform S3 backend's
+# bucket/key does NOT move the underlying state object — that needs
+# `terraform init -migrate-state` (or a manual object copy) run by hand
+# against the real bucket, ideally after backing up the current state
+# object first. Do this before running `terraform` again with this config.
 terraform {
   backend "s3" {
-    bucket                      = "gami-backup"
-    key                         = "infra/terraform.tfstate"
+    bucket                      = "gami-prod-backup"
+    key                         = "tf-infrastructure/terraform.tfstate"
     region                      = "Falkenstein"
     endpoints                   = { s3 = "https://fsn1.your-objectstorage.com" }
     skip_credentials_validation = true
