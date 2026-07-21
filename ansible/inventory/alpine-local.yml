@@ -5,12 +5,28 @@ all:
   children:
     k3s_server:
       hosts:
+        # hcloud_labels.env mirrors the hostvar shape the real
+        # hetzner.hcloud.hcloud dynamic inventory (inventory/hcloud.yml)
+        # populates from each Hetzner server's cloud labels
+        # (terraform/main.tf's `labels.env`). k3s-server/tasks/cluster-init.yml
+        # and join.yml read this same path for both inventories so the role
+        # code doesn't need an inventory-specific branch — this local rig
+        # just fakes the same shape by hand. See README.md's "Node topology"
+        # section for what these values mean (dev/staging/prod). Assignment
+        # here matches this rig's actual VM sizing: alpine-c is the biggest
+        # box (prod), alpine-w2 is the smallest (dev).
         alpine-c:
           ansible_host: 192.168.253.128
+          hcloud_labels:
+            env: prod
         alpine-w:
           ansible_host: 192.168.253.129
+          hcloud_labels:
+            env: staging
         alpine-w2:
           ansible_host: 192.168.253.130
+          hcloud_labels:
+            env: dev
   vars:
     ansible_user: root
     ansible_ssh_private_key_file: ~/.ssh/mrilk_np
