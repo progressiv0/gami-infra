@@ -312,6 +312,88 @@ Also: a Traefik custom port needs `expose: default: true` in the
 ports — without it, the entrypoint works inside the pod but nothing outside
 the cluster can reach it.
 
+### Gotcha: ArgoCD sync stuck forever on "waiting for healthy state of ... Ingress"
+
+Symptom: an Application's sync operation never finishes — `kubectl get
+application <name> -n argocd -o jsonpath='{.status.operationState.message}'`
+shows `waiting for healthy state of networking.k8s.io/Ingress/<name>`
+indefinitely, blocking every sync-wave after the Ingress (in this repo,
+that means `gami-migrate` and the CNPG `Cluster` never even get created).
+
+Cause: ArgoCD's built-in health check for `Ingress` expects
+`.status.loadBalancer.ingress` to be populated — the IP/hostname a cloud
+LoadBalancer would assign. Traefik running in host-network mode (this
+repo's k3s setup, `servicelb` disabled — see
+`ansible/roles/k3s-server/defaults/main.yml`) never populates that field
+for any Ingress, so ArgoCD considers every Ingress here permanently
+unhealthy. This isn't a local-only quirk — it would happen in real
+production with this same Traefik configuration too.
+
+Fix: add a `resource.customizations.health.networking.k8s.io_Ingress` Lua
+override to `argocd-cm` that treats an Ingress as healthy once it exists,
+without checking `loadBalancer` status. This repo's `argocd` Ansible role
+does this automatically (`files/ingress-health-check.lua` +
+the "Patch argocd-cm with the Ingress health check override" task) — if
+you're seeing this on a cluster bootstrapped before that task existed,
+re-run `site.yml`/`alpine-local.yml`, or apply the patch by hand:
+```bash
+kubectl patch configmap argocd-cm -n argocd --type merge \
+  --patch-file ansible/roles/argocd/files/ingress-health-check.lua
+# (wrap the file's content under the right YAML key first — see the Ansible
+# task for the exact patch shape; a raw Lua file isn't a valid patch on its own)
+```
+
+### Gotcha: cert-manager can't issue real certs on a local/private network
+
+If your Ingress hostnames (`dev.authenticmemory.org` etc.) don't have real
+DNS pointing at your local VMs, cert-manager's Let's Encrypt HTTP-01
+challenge can never complete — the `cm-acme-http-solver` pods run forever,
+the `Certificate` stays `READY: False`, and (before the health-check fix
+above existed) this used to block the whole sync-wave chain too. For local
+testing, point the Ingress at a self-signed `ClusterIssuer` instead:
+```bash
+kubectl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-local-test
+spec:
+  selfSigned: {}
+EOF
+kubectl annotate ingress gami-webapp -n <namespace> \
+  cert-manager.io/cluster-issuer=selfsigned-local-test --overwrite
+kubectl delete certificate gami-webapp-tls -n <namespace>
+kubectl delete secret gami-webapp-tls -n <namespace>
+```
+This is a live, out-of-band patch for local testing only — don't commit it
+to the real overlays. ArgoCD's `selfHeal: true` will revert the annotation
+back to the committed `letsencrypt-staging`/`letsencrypt-production` value
+on its next sync; that's expected and fine once the Ingress health check
+fix above means it no longer blocks anything either way.
+
+### Gotcha: Longhorn replica scheduling fails even after fixing the percentage threshold
+
+Two distinct Longhorn scheduling failures look similar but need different
+fixes — check `kubectl describe volumes.longhorn.io <name> -n longhorn-system`'s
+`Scheduled` condition message to tell them apart:
+- `"disks are unavailable"` / a disk's `Schedulable` condition is `False`
+  with a `DiskPressure` reason — the node is above Longhorn's
+  `storage-minimal-available-percentage` threshold (25% free by default).
+  Fix: lower the setting (see `cluster-operators/longhorn/settings.yaml`).
+- `"insufficient storage"` — the node has enough free *percentage* now, but
+  not enough raw space for this specific PVC's requested size. Lowering the
+  percentage threshold further won't fix this; the actual fix is requesting
+  less storage (see `overlays/dev/postgres-cluster.yaml`'s `size:`) or
+  giving the node more real disk.
+
+Either way, after fixing the underlying cause you may need to delete the
+CNPG `Cluster` (and its PVC, if orphaned: `kubectl delete pvc <name> -n
+<namespace>`) rather than just the stuck pod — CNPG can get its own state
+tracking wedged after a storage-related failure
+(`STATUS: Cluster is unrecoverable and needs manual intervention`), and
+recreating the whole `Cluster` object is more reliable than trying to
+un-wedge it in place.
+
 ---
 
 ## Verifying the cluster
@@ -376,17 +458,17 @@ For genuinely local app testing, either:
 Either way, remember the app itself needs:
 - `ghcr-pull-secret` created manually (see
   `base/README-image-pull-secret.md`) — nothing pulls without it.
-- **cert-manager, the CloudNativePG operator, and Longhorn** — if
-  `argocd/`'s manifests were applied (either via the `argocd` role or by
-  hand), these install themselves automatically through
-  `argocd/app-cluster-operators.yaml` (see [README.md](README.md)'s
+- **cert-manager, the CloudNativePG operator, Longhorn, and Sealed
+  Secrets** — if `argocd/`'s manifests were applied (either via the
+  `argocd` role or by hand), these install themselves automatically
+  through `argocd/app-cluster-operators.yaml` (see [README.md](README.md)'s
   `cluster-operators/` section) — no separate step needed. If you skipped
   ArgoCD entirely and only ran `kubectl apply -k overlays/...` directly,
   you'll need to apply `cluster-operators/cert-manager`,
-  `cluster-operators/cnpg`, and `cluster-operators/longhorn` yourself the
-  same way (`kubectl apply -k cluster-operators/cnpg --server-side` — CNPG's
-  and Longhorn's CRDs are too large for client-side apply, see those
-  Kustomizations' own comments).
+  `cluster-operators/cnpg`, `cluster-operators/longhorn`, and
+  `cluster-operators/sealed-secrets` yourself the same way (`kubectl apply
+  -k cluster-operators/cnpg --server-side` — CNPG's and Longhorn's CRDs are
+  too large for client-side apply, see those Kustomizations' own comments).
 - **Longhorn also needs `open-iscsi` + a running `iscsid` service on every
   node** — a real host-level dependency no manifest can satisfy. On a local
   VM this means installing it yourself to match `ansible/roles/node-baseline/tasks/main.yml`
@@ -397,7 +479,11 @@ Either way, remember the app itself needs:
   S3 backup locally; also GitOps-managed (`cluster-operators/cnpg-barman-plugin/`),
   applied automatically alongside cert-manager/CNPG. See
   `overlays/production/README-backup.md`.
-- Sealed Secrets controller installed, and real secrets sealed via the
+- **The Sealed Secrets controller** — also GitOps-managed now
+  (`cluster-operators/sealed-secrets/`), applied automatically alongside
+  the others. It lands in `kube-system`, not its own namespace — the
+  upstream manifest hardcodes that. Regardless of whether it's automatic
+  or applied by hand, real secrets still need to be sealed via the
   bootstrap runbook described in each environment's own README (dev/staging/
   production) — `overlays/*/sealed-secrets/` are empty `resources: []` until
   you do this.

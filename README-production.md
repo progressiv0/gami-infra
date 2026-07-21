@@ -26,11 +26,10 @@ another environment is already running on this cluster, skip straight to
 Identical to staging's prerequisites — this is one cluster, not separate
 ones per environment. Follow [README-staging.md](README-staging.md)'s
 **One-time cluster bootstrap** section in full (Terraform provisioning,
-Ansible k3s+ArgoCD bootstrap — cert-manager, CloudNativePG, and Longhorn all
-install themselves automatically via ArgoCD once that's done, see
-[README.md](README.md)'s `cluster-operators/` section; the Sealed Secrets
-controller is the one piece still installed manually). Come back here once
-that's done.
+Ansible k3s+ArgoCD bootstrap — cert-manager, CloudNativePG, Longhorn, and
+the Sealed Secrets controller all install themselves automatically via
+ArgoCD once that's done, see [README.md](README.md)'s `cluster-operators/`
+section). Come back here once that's done.
 
 Also confirm the **Barman Cloud plugin** specifically came up — it's the
 one piece of `cluster-operators/` that only production needs:
@@ -67,7 +66,7 @@ NEXTAUTH_SECRET=$(openssl rand -hex 32)
 
 kubeseal --fetch-cert \
   --controller-namespace kube-system \
-  --controller-name sealed-secrets > /tmp/sealed-secrets-cert.pem
+  --controller-name sealed-secrets-controller > /tmp/sealed-secrets-cert.pem
 
 kubectl create secret generic gami-secrets \
   --namespace gami \

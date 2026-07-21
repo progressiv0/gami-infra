@@ -142,16 +142,16 @@ Let's Encrypt cert (an `Ingress`/`IngressRoute` with
 `cert-manager.io/cluster-issuer: letsencrypt-production`) rather than relying
 on the raw NodePort long-term.
 
-### 4. Cluster operators (cert-manager, CNPG, Longhorn) — automatic, just confirm they came up
+### 4. Cluster operators (cert-manager, CNPG, Longhorn, Sealed Secrets) — automatic, just confirm they came up
 
-Unlike an earlier version of this repo, **cert-manager, the CloudNativePG
-operator, and Longhorn are no longer a manual install step** —
-`argocd/app-cluster-operators.yaml` (an App-of-Apps parent, see
-[README.md](README.md)'s `cluster-operators/` section) applies them
-automatically as soon as ArgoCD itself exists, since `site.yml`'s `argocd`
-role applies every file in `argocd/` including this one. Just confirm they
-actually came up before moving on — if the underlying `kubectl apply -f
-argocd/` step in `site.yml` ran, these should already be `Synced`/`Healthy`:
+Unlike an earlier version of this repo, **none of these are a manual
+install step anymore** — `argocd/app-cluster-operators.yaml` (an
+App-of-Apps parent, see [README.md](README.md)'s `cluster-operators/`
+section) applies all of them automatically as soon as ArgoCD itself
+exists, since `site.yml`'s `argocd` role applies every file in `argocd/`
+including this one. Just confirm they actually came up before moving on —
+if the underlying `kubectl apply -f argocd/` step in `site.yml` ran, these
+should already be `Synced`/`Healthy`:
 
 ```bash
 kubectl get application cluster-operators -n argocd
@@ -160,6 +160,7 @@ kubectl get pods -n cert-manager
 kubectl get pods -n cnpg-system
 kubectl get pods -n longhorn-system
 kubectl get storageclass longhorn
+kubectl get pods -n kube-system -l name=sealed-secrets-controller
 ```
 
 If they're not there yet, ArgoCD may not have gotten to its first sync —
@@ -176,10 +177,12 @@ installs this, so it should already be true if `site.yml` ran the full
 immediate PersistentVolumeClaims`, check `systemctl status iscsid` on each
 node before assuming it's a Longhorn manifest problem.
 
-**One thing this repo still doesn't automate**: the **Sealed Secrets
-controller** (bitnami-labs) — needed before any `SealedSecret` in
-`overlays/*/sealed-secrets/` can be decrypted into a real `Secret`. Install
-this separately, the same manual way as before.
+**Sealed Secrets lands in `kube-system`, not its own namespace** — the
+upstream `controller.yaml` hardcodes that namespace on every resource it
+defines, so it's not something this repo's Application `destination`
+controls. `kubeseal --fetch-cert` needs `--controller-namespace kube-system
+--controller-name sealed-secrets-controller` to match (see the secrets
+bootstrap steps below).
 
 Traefik does **not** need separate installation — k3s bundles it (that's why
 `k3s_disable` in `ansible/roles/k3s-server/defaults/main.yml` disables
@@ -214,7 +217,7 @@ NEXTAUTH_SECRET=$(openssl rand -hex 32)
 # Fetch the cluster's public key (safe from anywhere — encrypt-only)
 kubeseal --fetch-cert \
   --controller-namespace kube-system \
-  --controller-name sealed-secrets > /tmp/sealed-secrets-cert.pem
+  --controller-name sealed-secrets-controller > /tmp/sealed-secrets-cert.pem
 
 # Seal straight into the staging overlay
 kubectl create secret generic gami-secrets \

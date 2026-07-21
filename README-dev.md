@@ -38,7 +38,7 @@ NEXTAUTH_SECRET=$(openssl rand -hex 32)
 
 kubeseal --fetch-cert \
   --controller-namespace kube-system \
-  --controller-name sealed-secrets > /tmp/sealed-secrets-cert.pem
+  --controller-name sealed-secrets-controller > /tmp/sealed-secrets-cert.pem
 
 kubectl create secret generic gami-secrets \
   --namespace gami-dev \

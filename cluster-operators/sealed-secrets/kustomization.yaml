@@ -1,0 +1,11 @@
+# Bitnami Sealed Secrets controller, pinned to the version installed/
+# verified against this cluster (see README.md's "Cluster operators"
+# section). Provides the `SealedSecret` CRD every overlay's
+# sealed-secrets/*.yaml depends on — without it, a SealedSecret manifest
+# can't even be applied (no CRD registered), let alone decrypted into a
+# real Secret. Confirmed against a real cluster: gami-webapp sat on
+# CreateContainerConfigError ("secret gami-secrets not found") because
+# this was never installed and no Secret had ever been created any other
+# way either.
+resources:
+  - https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.38.4/controller.yaml
