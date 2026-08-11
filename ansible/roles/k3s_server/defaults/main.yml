@@ -1,0 +1,18 @@
+k3s_version: v1.36.3+k3s1
+
+# k3s server flags — servicelb is disabled because Traefik handles ingress
+# directly on the host network instead. The bundled local-path storage
+# provisioner stays enabled: each environment is now its own single-node
+# cluster, so there is no second node for a replicated block-storage layer
+# (Longhorn) to spread across in the first place — it would buy nothing.
+# CNPG runs single-instance (instances: 1) everywhere too, purely for its
+# Barman Cloud backup/restore tooling, not cross-node replication (there's
+# no other node to replicate to). Durability comes entirely from the
+# backup schedule: production ships continuous WAL + nightly base backups
+# to S3 (see overlays/production/database/postgres-cluster.yaml); staging
+# deliberately has none configured — a documented tradeoff, not an
+# oversight. Longhorn also dragged in a hard iscsi_tcp kernel-module
+# dependency that isn't present on every node, which was another reason to
+# drop it.
+k3s_disable:
+  - servicelb

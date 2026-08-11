@@ -1,9 +1,9 @@
-# Child of the App-of-Apps parent (argocd/app-cluster-operators.yaml) — see
-# that file and cluster-operators/apps/kustomization.yaml for why sync-wave
-# ordering only works nested under a parent, not as a standalone Application.
-# Wave 0 — no dependencies. The Barman Cloud plugin (wave 1) needs
-# cert-manager's Certificate/Issuer CRDs to already exist before it applies
-# its own self-signed mTLS cert/issuer.
+# Child of the App-of-Apps parent (argocd/app-cluster-operators-staging.yaml).
+# Wave 0 — no dependencies. Applied locally, since ArgoCD itself runs on
+# staging. Source directory (cluster-operators/cert-manager/) is shared,
+# cluster-agnostic — production's copy of this Application (apps-production/
+# cert-manager.yaml) references the exact same path, just with a different
+# destination.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

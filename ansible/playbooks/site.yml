@@ -1,42 +1,42 @@
-# Idempotent — safe to re-run. This is how new nodes get added (add to
-# Terraform, re-run site.yml) or existing ones get reconciled after drift.
+# Idempotent — safe to re-run. This is how a new node gets added (add to
+# terraform/variables.tf + ansible/inventory/production.yml, re-run
+# site.yml) or an existing one gets reconciled after drift.
 #
-# Node ordering matters for embedded-etcd bootstrap: node 1 initializes the
-# cluster (--cluster-init), nodes 2/3 join it (--server https://<node1>:6443).
-# `ansible_play_batch`/group order from the hcloud dynamic inventory isn't
-# guaranteed stable across runs, so this pins "first node alphabetically by
-# Terraform-assigned name" as node 1 rather than relying on inventory order.
+# Each node bootstraps its own fully independent, unjoined k3s installation
+# — there's no bootstrap/join two-phase dance anymore (see git history for
+# the old 3-node joined-cluster version of this file if you need it). ArgoCD
+# installs on staging only and manages production as a registered remote
+# cluster — see roles/argocd/tasks/register-remote-cluster.yml.
 - name: Configure node baseline (all nodes)
   hosts: k3s_server
   become: true
   roles:
-    - node-baseline
+    - node_baseline
 
-- name: Bootstrap the first k3s server (cluster-init)
+- name: Bootstrap k3s on every node independently (single-node embedded-etcd)
   hosts: k3s_server
+  become: true
+  roles:
+    - k3s_server
+
+- name: Install ArgoCD on staging (the one central instance)
+  hosts: env_staging
   become: true
   run_once: true
-  # Pins node 1 deterministically instead of trusting inventory ordering.
   vars:
-    k3s_bootstrap_node: "{{ groups['k3s_server'] | sort | first }}"
-  tasks:
-    - name: Delegate cluster-init to the pinned first node
-      block:
-        - name: Include k3s-server cluster-init tasks
-          ansible.builtin.include_role:
-            name: k3s-server
-            tasks_from: cluster-init.yml
-      delegate_to: "{{ k3s_bootstrap_node }}"
-      run_once: true
+    project_root: "{{ playbook_dir }}/../.."
+  roles:
+    - argocd
 
-- name: Join the remaining nodes to the cluster
-  hosts: k3s_server
+- name: Register production as a remote cluster in staging's ArgoCD
+  hosts: env_staging
   become: true
+  run_once: true
   vars:
-    k3s_bootstrap_node: "{{ groups['k3s_server'] | sort | first }}"
+    project_root: "{{ playbook_dir }}/../.."
+    prod_node: "{{ groups['env_prod'] | first }}"
   tasks:
-    - name: Join this node (skipped on the bootstrap node itself)
+    - name: Include register-remote-cluster tasks
       ansible.builtin.include_role:
-        name: k3s-server
-        tasks_from: join.yml
-      when: inventory_hostname != k3s_bootstrap_node
+        name: argocd
+        tasks_from: register-remote-cluster.yml

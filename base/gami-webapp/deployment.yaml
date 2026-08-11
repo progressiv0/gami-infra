@@ -5,9 +5,11 @@ metadata:
   labels:
     app: gami-webapp
 spec:
-  # Base default is 1; production's overlay bumps this to 3 (one per node,
-  # via podAntiAffinity — see overlays/production/kustomization.yaml).
-  # Safe to run >1 replica: src/instrumentation.ts's in-process OTS-upgrade
+  # 1 everywhere — each environment is its own single-node cluster now, so
+  # there's no node-spread HA to gain from more replicas (production used
+  # to bump this to 3 via podAntiAffinity across 3 nodes; that topology is
+  # gone). Safe to run >1 replica if that ever changes though:
+  # src/instrumentation.ts's in-process OTS-upgrade
   # sweep (gami-app's src/lib/ots-upgrade.ts) has a single-instance overlap
   # guard the code's own comment says is safe to skip in multi-instance
   # deploys — a concurrent sweep from multiple replicas is idempotent

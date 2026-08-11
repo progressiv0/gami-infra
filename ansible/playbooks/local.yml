@@ -1,31 +1,38 @@
 ---
+# Single machine mirroring staging's design exactly: single-node k3s, CNPG
+# (instances: 1, no backup) instead of dev's old plain-Postgres Deployment.
+# Reuses the real overlays/staging + argocd/app-gami-staging.yaml unmodified
+# — ArgoCD's destination is always "wherever it runs," so no separate local
+# overlay is needed. There's no second cluster on a local rig, so nothing
+# gets registered as a remote (argocd_remote_apps stays empty).
+#
+# Known limitation (carried over from when this mirrored dev instead):
+# overlays/staging's Ingress/cert-manager config targets the real
+# staging.authenticmemory.org hostnames and the Let's Encrypt staging ACME
+# solver, neither of which resolves/verifies on a local machine — the
+# harmless failed ACME challenge can be ignored, or edit /etc/hosts +
+# port-forward to reach the app directly.
 - name: Local machine Kubernetes + ArgoCD bootstrap
   hosts: localhost
   connection: local
   become: true
   gather_facts: true
   vars:
-    k3s_version: v1.31.4+k3s1
+    k3s_version: v1.36.3+k3s1
     k3s_disable:
       - servicelb
       - local-storage
     k3s_node_name: "{{ ansible_hostname }}"
     project_root: "{{ playbook_dir }}/../.."
-    # Overrides the argocd role's default (staging + production, matching
-    # real hcloud) — a single local machine only needs dev to exercise the
-    # infrastructure itself. See roles/argocd/defaults/main.yml.
-    argocd_gami_environments:
-      - dev
+    hcloud_labels:
+      env: staging
+    argocd_local_apps:
+      - app-cluster-operators-staging.yaml
+      - app-gami-cluster-wide-staging.yaml
+      - app-gami-staging.yaml
+    argocd_remote_apps: []
 
   roles:
-    - node-baseline
-
-  tasks:
-    - name: Install k3s server on localhost
-      ansible.builtin.include_role:
-        name: k3s-server
-        tasks_from: cluster-init.yml
-
-    - name: Install ArgoCD on the local Kubernetes cluster
-      ansible.builtin.include_role:
-        name: argocd
+    - node_baseline
+    - k3s_server
+    - argocd

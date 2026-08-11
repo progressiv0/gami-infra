@@ -1,0 +1,14 @@
+---
+# Only fire when "Run argocd-server in insecure mode" (tasks/main.yml)
+# actually changed something — Ansible runs notified handlers in the order
+# they're defined here, not notification order, so listing the restart
+# before the wait is what keeps them sequential.
+- name: Restart argocd-server
+  ansible.builtin.command:
+    cmd: k3s kubectl rollout restart deployment argocd-server -n {{ argocd_namespace }}
+  changed_when: true
+
+- name: Wait for argocd-server rollout
+  ansible.builtin.command:
+    cmd: k3s kubectl rollout status deployment argocd-server -n {{ argocd_namespace }} --timeout=120s
+  changed_when: false

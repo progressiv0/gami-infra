@@ -1,0 +1,53 @@
+# The real infrastructure: two pre-existing Hetzner servers, each running
+# its own fully independent, unjoined k3s installation — not a shared
+# cluster (see README.md's "Mental model"). Static, not the hcloud dynamic
+# inventory plugin this repo used to use: Terraform no longer owns these
+# servers (see terraform/variables.tf), so it no longer sets the
+# role/env Hetzner labels that plugin depended on. This file *is* the
+# "variable file to add servers to" — add a host block under the right
+# group(s) to bring another already-provisioned box under Ansible's
+# management (and add a matching terraform/variables.tf `nodes` entry too,
+# for the networking/firewall pieces Terraform does own).
+#
+# Real public IPs are deliberately NOT committed here (this repo is
+# public) — they're read from environment variables at run time instead:
+#   export GAMI_STAGING_IP="<gami-staging's real public IP>"
+#   export GAMI_PROD_IP="<gami-prod's real public IP>"
+# ansible-playbook (or any ansible-* command) picks them up automatically.
+all:
+  children:
+    k3s_server:
+      hosts:
+        gami-staging:
+          ansible_host: "{{ lookup('env', 'GAMI_STAGING_IP') }}"
+          hcloud_labels:
+            env: staging
+        gami-prod:
+          ansible_host: "{{ lookup('env', 'GAMI_PROD_IP') }}"
+          hcloud_labels:
+            env: prod
+          # Must match terraform/main.tf's hcloud_server_network pin for
+          # this node — the address staging's ArgoCD reaches prod's k3s API
+          # on, over the dedicated argocd-link network (see
+          # ansible/roles/argocd/tasks/register-remote-cluster.yml). Not
+          # secret — an RFC1918 address on a private network with no route
+          # to/from the internet, firewalled to that one subnet only
+          # (terraform/main.tf's argocd_link firewall) — unlike the public
+          # IPs above, knowing it grants no access.
+          argocd_link_ip: 10.10.0.3
+    # env_staging: where the one central ArgoCD instance installs.
+    # env_prod: the delegation target for registering prod as a remote
+    # ArgoCD-managed cluster.
+    env_staging:
+      hosts:
+        gami-staging: {}
+    env_prod:
+      hosts:
+        gami-prod: {}
+  vars:
+    ansible_user: ops
+    # Optional — only needed if the key you connect with isn't already
+    # discoverable via ssh-agent or ~/.ssh/config. `| default(omit, true)`
+    # means an unset/empty env var is treated as "not set" and Ansible falls
+    # back to its own normal SSH key discovery, rather than passing `-i ""`.
+    ansible_ssh_private_key_file: "{{ lookup('env', 'GAMI_SSH_PRIVATE_KEY_PATH') | default(omit, true) }}"

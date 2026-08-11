@@ -1,9 +1,6 @@
-# Child of the App-of-Apps parent (argocd/app-cluster-operators.yaml) — see
-# that file and cluster-operators/apps/kustomization.yaml for why sync-wave
-# ordering only works nested under a parent, not as a standalone Application.
-# Wave 0 — no dependencies (independent of cert-manager). The Barman Cloud
-# plugin (wave 1) needs this operator's CRDs (clusters.postgresql.cnpg.io
-# etc.) to already exist.
+# Child of the App-of-Apps parent (argocd/app-cluster-operators-staging.yaml).
+# Wave 0 — no dependencies. Applied locally, since ArgoCD itself runs on
+# staging.
 #
 # ServerSideApply=true is required, not optional: clusters.postgresql.cnpg.io
 # and poolers.postgresql.cnpg.io exceed Kubernetes' 262144-byte

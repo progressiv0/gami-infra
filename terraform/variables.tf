@@ -9,38 +9,30 @@ variable "admin_ip_cidr" {
   type        = string
 }
 
-variable "ssh_public_key" {
-  description = "Public key content (e.g. contents of ~/.ssh/id_ed25519.pub) installed on all 3 nodes for the ops user."
-  type        = string
-}
-
 variable "location" {
   description = "Hetzner datacenter location."
   type        = string
   default     = "fsn1"
 }
 
-# 3 nodes, deliberately sized differently and pinned to one primary
-# environment each — see README.md's "Node topology" section:
-#   - dev/staging nodes are small and normally only run their own
-#     environment (ArgoCD lives on the dev node too).
-#   - the prod node is bigger, but prod's own Deployments are spread across
-#     all 3 nodes (pod anti-affinity in base/), not confined to this node —
-#     this list only controls where each node's OWN environment prefers to
-#     live and how big that node is, not where prod can schedule.
-# Changing the *number* of nodes (not just their names/sizes) changes the
-# etcd quorum math (odd member count needed) — see Phase 5's Ansible notes
-# in .claude/plans/infrastructure-cicd-plan.md.
+# Pre-existing Hetzner servers this repo attaches networking/firewalls to.
+# Terraform never creates, resizes, or destroys these (see main.tf's `data
+# "hcloud_server"` block) — both are already-provisioned cx22 boxes, one per
+# environment, each running its own fully independent, unjoined k3s
+# installation (no shared cluster, no etcd quorum to keep, no "differently
+# sized nodes" — that framing belonged to the old 3-node shared-cluster
+# design). Add a new entry here (name must match the real Hetzner server
+# name exactly) to bring another already-provisioned box under this repo's
+# network/firewall management — Terraform will never touch the server
+# itself, only what's attached to it.
 variable "nodes" {
-  description = "One entry per k3s server node: name, size, and which environment it's the home node for (env label, used by Kubernetes nodeAffinity in base/overlays)."
+  description = "One entry per pre-existing k3s server this repo manages networking/firewalls for: name (must match the real Hetzner server name) and which environment it belongs to."
   type = list(object({
-    name        = string
-    server_type = string
-    env         = string
+    name = string
+    env  = string
   }))
   default = [
-    { name = "gami-node-dev",     server_type = "cx22", env = "dev" },
-    { name = "gami-node-staging", server_type = "cx22", env = "staging" },
-    { name = "gami-node-prod",    server_type = "cx42", env = "prod" },
+    { name = "gami-staging", env = "staging" },
+    { name = "gami-prod", env = "prod" },
   ]
 }

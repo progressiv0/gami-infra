@@ -1,14 +1,22 @@
 # Production Postgres backups
 
-Only production backs up to S3 — dev and staging don't (see `README.md`'s
-"Node topology" section for why: they're explicitly not meant to be highly
-reliable, so there's nothing to protect beyond redeploying).
+Only production backs up to S3 — staging doesn't (a documented tradeoff,
+not an oversight: staging's cluster has no backup plugin installed at all,
+see `cluster-operators/apps-staging/`). Production's CNPG runs
+`instances: 1` too (each environment is its own single-node cluster now —
+there's no second node to stream-replicate to), so this backup story is
+what durability actually rests on, not live replication.
 
 ## What's already automatic
 
 `postgres-cluster.yaml` wires up:
-- A nightly `ScheduledBackup` (`gami-postgres-nightly`, 02:00 daily) — the
-  baseline safety net, no action needed once the cluster is bootstrapped.
+- **Continuous WAL archiving** with `archive_timeout: 60s` — bounds data
+  loss to about a minute for point-in-time recovery, not just "since last
+  night." This is the actual recovery-granularity control; see the
+  header comment on `postgres-cluster.yaml` for the full reasoning.
+- A nightly `ScheduledBackup` (`gami-postgres-nightly`, 02:00 daily) — a
+  base-backup checkpoint that just makes restores faster (less WAL to
+  replay), no action needed once the cluster is bootstrapped.
 - 30-day retention (`ObjectStore.spec.retentionPolicy`) — older backups are
   pruned automatically.
 
@@ -17,11 +25,13 @@ reliable, so there's nothing to protect beyond redeploying).
 1. **Confirm the Barman Cloud CNPG-I plugin is installed** (separate from
    the CNPG operator itself — required since CNPG 1.26 deprecated the old
    inline `spec.backup.barmanObjectStore` field in favor of this plugin).
-   This is no longer a manual step — `argocd/app-cluster-operators.yaml`
-   installs it automatically (see [README.md](README.md)'s
-   `cluster-operators/` section for the pinned version and why it's
-   GitOps-managed instead of a one-off `kubectl apply`). Just verify it's
-   actually up:
+   This is no longer a manual step — `argocd/app-cluster-operators-production.yaml`
+   installs it automatically, against production's registered remote
+   cluster (see [README.md](README.md)'s `cluster-operators/` section for
+   the pinned version and why it's GitOps-managed instead of a one-off
+   `kubectl apply`). Just verify it's actually up (against production's own
+   kubeconfig context — this cluster is fully independent of staging's,
+   where ArgoCD itself runs):
    ```bash
    kubectl get pods -n cnpg-system -l app.kubernetes.io/name=barman-cloud
    ```
@@ -82,12 +92,16 @@ ServiceAccount — see `.claude/plans/infrastructure-cicd-plan.md`, Phase 6.
 ## Verifying backups actually work
 
 Don't trust a green `ScheduledBackup` status alone — periodically confirm a
-**restore** actually works, e.g. in a scratch namespace:
+**point-in-time restore** actually works, not just "restore the latest
+nightly snapshot":
 ```bash
 kubectl get backup -n gami   # find a completed backup's name
 ```
-Then bootstrap a throwaway `Cluster` with `.spec.bootstrap.recovery` pointing
-at that backup, confirm the data is actually there and queryable, and delete
-the scratch cluster afterward. CNPG's own docs cover the exact
-`bootstrap.recovery` shape for the plugin model — check the version-specific
-docs for the CNPG release you're running.
+Run a test transaction, note the timestamp, then bootstrap a throwaway
+`Cluster` with `.spec.bootstrap.recovery` pointing at that backup and a
+`recoveryTarget.targetTime` shortly after your test transaction — confirm
+the recovered data matches up to that exact point (proving `archive_timeout`
+is actually shipping WAL promptly, not just that nightly backups exist),
+then delete the scratch cluster afterward. CNPG's own docs cover the exact
+`bootstrap.recovery`/`recoveryTarget` shape for the plugin model — check the
+version-specific docs for the CNPG release you're running.

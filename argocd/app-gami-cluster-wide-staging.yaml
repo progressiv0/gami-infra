@@ -1,11 +1,12 @@
 # Cluster-scoped shared resources (currently: the two cert-manager
-# ClusterIssuers) — synced once, independent of and before the staging/
-# production Applications. destination.namespace is irrelevant for
-# cluster-scoped resources but required by the Application schema.
+# ClusterIssuers) for staging's cluster — its own cert-manager instance
+# needs its own ClusterIssuers. Applied locally, since ArgoCD itself runs
+# on staging. destination.namespace is irrelevant for cluster-scoped
+# resources but required by the Application schema.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: gami-cluster-wide
+  name: gami-cluster-wide-staging
   namespace: argocd
 spec:
   project: default

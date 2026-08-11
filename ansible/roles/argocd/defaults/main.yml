@@ -4,25 +4,39 @@ argocd_app_path: "{{ project_root }}/argocd"
 argocd_wait_retries: 30
 argocd_wait_delay: 10
 
-# Which per-environment app-gami-*.yaml Applications to apply. Default
-# matches the real Hetzner (hcloud) production cluster — dev is deliberately
-# NOT part of the real cluster, it's a local-test-only concept. Local
-# playbooks (local.yml, alpine-local.yml) override this to just ["dev"]:
-# running staging/production on a handful of small local test VMs (or dev
-# alongside them) is what caused this repo's repeated disk-pressure/OOM
-# problems this session — local rigs only need dev to exercise the
-# infrastructure itself.
-# app-cluster-operators.yaml and app-gami-cluster-wide.yaml are NOT
-# per-environment and are always applied regardless of this list.
+# Must match the repoURL every argocd/*.yaml and cluster-operators/apps-*/
+# *.yaml Application hardcodes. If that repo is private, ArgoCD (running on
+# staging) needs credentials to clone it — see tasks/repo-credentials.yml,
+# sourced from GAMI_INFRA_REPO_TOKEN/GAMI_INFRA_REPO_USERNAME env vars. Only
+# one cluster ever needs this: argocd-repo-server always runs on staging
+# (see README.md) and does the cloning for both clusters' Applications,
+# regardless of which cluster a given Application's destination is.
+argocd_repo_url: https://github.com/progressiv0/gami-infra
+
+# ArgoCD installs once, on staging, and manages BOTH clusters from there —
+# staging locally (destination.server: https://kubernetes.default.svc,
+# unchanged), production as a registered remote cluster (see
+# tasks/register-remote-cluster.yml). These two lists are which Application
+# manifests get applied against each destination.
 #
-# "production-database" (not "production"): production's Postgres
-# (overlays/production/database/, HA + S3 backup) is deployed now, ahead of
-# its web app — the app's branches/images aren't ready yet.
-# "production-webapp" (overlays/production/webapp/) is deliberately left
-# out until then; add it to this list once ready, no other change needed.
-argocd_gami_environments:
-  - staging
-  - production-database
+# Local playbooks (local.yml) override argocd_local_apps to the
+# app-*-staging.yaml set (same files, since local mirrors staging) and set
+# argocd_remote_apps: [] — a local rig is single-cluster, nothing to
+# register.
+argocd_local_apps:
+  - app-cluster-operators-staging.yaml
+  - app-gami-cluster-wide-staging.yaml
+  - app-gami-staging.yaml
+
+# "production-database" (not "production-webapp"): production's Postgres
+# (overlays/production/database/, single-instance CNPG + S3 backup) is
+# deployed now, ahead of its web app — the app's branches/images aren't
+# ready yet. app-gami-production-webapp.yaml is deliberately left out until
+# then; add it to this list once ready, no other change needed.
+argocd_remote_apps:
+  - app-cluster-operators-production.yaml
+  - app-gami-cluster-wide-production.yaml
+  - app-gami-production-database.yaml
 
 # Dedicated Traefik entrypoint for the ArgoCD UI/API — kept off 80/443,
 # which are reserved for gami-webapp. Must match the port hardcoded in

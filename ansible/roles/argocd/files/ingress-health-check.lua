@@ -1,7 +1,7 @@
 -- ArgoCD's built-in Ingress health check expects .status.loadBalancer.ingress
 -- to be populated (an IP/hostname a cloud LoadBalancer would assign). This
 -- k3s cluster runs Traefik with servicelb disabled (see
--- ansible/roles/k3s-server/defaults/main.yml — Traefik handles ingress
+-- ansible/roles/k3s_server/defaults/main.yml — Traefik handles ingress
 -- directly on the host network instead), so that field is never populated
 -- for ANY Ingress here, in local testing or real production alike.
 -- Confirmed against a real cluster: every sync got stuck forever on

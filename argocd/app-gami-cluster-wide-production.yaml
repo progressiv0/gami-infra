@@ -1,0 +1,24 @@
+# Cluster-scoped shared resources (currently: the two cert-manager
+# ClusterIssuers) for production's cluster — its own cert-manager instance
+# needs its own ClusterIssuers, independent of staging's. Same source as
+# gami-cluster-wide-staging.yaml (the ClusterIssuers are identical content
+# on both clusters), applied against the registered remote "prod" cluster
+# instead of locally.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gami-cluster-wide-production
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/progressiv0/gami-infra
+    targetRevision: main
+    path: cluster-wide
+  destination:
+    name: prod
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

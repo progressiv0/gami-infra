@@ -1,0 +1,35 @@
+# Child of the App-of-Apps parent (argocd/app-cluster-operators-production.yaml).
+# Wave 0 — no dependencies (independent of cert-manager). The Barman Cloud
+# plugin (wave 1) needs this operator's CRDs (clusters.postgresql.cnpg.io
+# etc.) to already exist. Applied against the registered remote "prod"
+# cluster.
+#
+# ServerSideApply=true is required, not optional: clusters.postgresql.cnpg.io
+# and poolers.postgresql.cnpg.io exceed Kubernetes' 262144-byte
+# last-applied-configuration annotation limit for client-side apply —
+# confirmed by hand (`kubectl apply` failed with "metadata.annotations: Too
+# long"). Without this option every sync of this Application fails the same
+# way.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-operators-cnpg
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/progressiv0/gami-infra
+    targetRevision: main
+    path: cluster-operators/cnpg
+  destination:
+    name: prod
+    namespace: cnpg-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

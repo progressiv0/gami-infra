@@ -1,12 +1,10 @@
-# Child of the App-of-Apps parent (argocd/app-cluster-operators.yaml) — see
-# that file and cluster-operators/apps/kustomization.yaml for why sync-wave
-# ordering only works nested under a parent, not as a standalone Application.
+# Child of the App-of-Apps parent (argocd/app-cluster-operators-production.yaml).
 # Wave 1 — depends on both cert-manager and CNPG (wave 0) already being
 # up: this plugin issues its own mTLS Certificate/Issuer (needs
 # cert-manager's CRDs) and registers with the CNPG operator (needs its CRDs)
-# during install. Only needed for production's S3 backups — see
-# overlays/production/postgres-cluster.yaml and
-# overlays/production/README-backup.md. Dev/staging don't need this at all.
+# during install. Only in production's apps set — staging has no backup, so
+# this plugin would be pure overhead there. Applied against the registered
+# remote "prod" cluster.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -21,7 +19,7 @@ spec:
     targetRevision: main
     path: cluster-operators/cnpg-barman-plugin
   destination:
-    server: https://kubernetes.default.svc
+    name: prod
     namespace: cnpg-system
   syncPolicy:
     automated:

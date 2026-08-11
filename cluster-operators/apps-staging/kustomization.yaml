@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Child Application manifests for staging's App-of-Apps parent
+# (argocd/app-cluster-operators-staging.yaml). No cnpg-barman-plugin here —
+# staging has no backup, so the plugin would be pure overhead. All three
+# entries are wave 0 (no dependencies between them); production's variant
+# additionally needs wave 1 for its Barman plugin — see
+# cluster-operators/apps-production/kustomization.yaml.
+resources:
+  - cert-manager.yaml
+  - cnpg.yaml
+  - sealed-secrets.yaml

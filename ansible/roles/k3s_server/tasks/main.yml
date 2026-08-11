@@ -1,0 +1,6 @@
+---
+# Every node bootstraps a single-node embedded-etcd k3s server, identically
+# and independently — nothing ever joins another node (see
+# playbooks/site.yml). `roles: [k3s_server]` is all callers need now.
+- name: Install k3s (single-node, cluster-init)
+  ansible.builtin.import_tasks: cluster-init.yml

@@ -53,26 +53,13 @@ images:
     newName: ghcr.io/authenticmemory/gami-webapp
     newTag: latest-migrate
 
-replicas:
-  - name: gami-webapp
-    # 3, one per node. gami-app dropped the old Go backend service — see
-    # README.md — so gami-webapp (Next.js) is the whole app now and is the
-    # one that needs real redundancy. Safe to run >1 replica: the in-process
-    # OTS-upgrade sweep's overlap guard (src/lib/ots-upgrade.ts in gami-app)
-    # is explicitly documented as single-instance-only, but a concurrent
-    # sweep from multiple replicas is idempotent/harmless (just redundant
-    # calendar fetches, not data corruption). See the podAntiAffinity patch
-    # below, which is what actually spreads these 3 replicas across nodes.
-    count: 3
+# No replicas override — base/'s own default (1) is correct here now.
+# Production's cluster has exactly one node, so podAntiAffinity-based
+# node-spread HA (the old 3-replicas-across-3-nodes design) no longer means
+# anything; a pod crash still gets Kubernetes' normal restart, just without
+# zero-downtime failover. gami-app dropped the old Go backend service — see
+# README.md — so gami-webapp (Next.js) is the whole app now.
 
-# Node topology (README.md): production is the environment that needs REAL
-# redundancy, so instead of a soft nodeAffinity preference (like dev/staging
-# use to normally stay off each other's nodes), gami-webapp gets
-# podAntiAffinity — "prefer not to co-locate two gami-webapp pods on the
-# same node." With 3 replicas and 3 nodes, this naturally spreads one prod
-# pod onto each node (including the dev/staging nodes) rather than piling
-# all 3 onto the big prod node alone — so losing any single node, including
-# the dedicated prod node, still leaves 2 of 3 replicas serving.
 patches:
   # gami-migrate-job.yaml (base/, sync-wave 0) reads this ConfigMap via
   # envFrom, so it needs to exist first — wave -1 guarantees that within
@@ -94,6 +81,8 @@ patches:
   # report Healthy — which for a Job means Completed — before starting this
   # wave. This is what actually blocks the webapp rollout until migration
   # succeeds, replacing the PreSync-hook mechanism this used to rely on.
+  # No podAntiAffinity here anymore — production's cluster has exactly one
+  # node, so there's nothing to spread across.
   - target:
       kind: Deployment
       name: gami-webapp
@@ -104,15 +93,3 @@ patches:
         name: gami-webapp
         annotations:
           argocd.argoproj.io/sync-wave: "1"
-      spec:
-        template:
-          spec:
-            affinity:
-              podAntiAffinity:
-                preferredDuringSchedulingIgnoredDuringExecution:
-                  - weight: 100
-                    podAffinityTerm:
-                      topologyKey: kubernetes.io/hostname
-                      labelSelector:
-                        matchLabels:
-                          app: gami-webapp

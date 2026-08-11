@@ -1,6 +1,10 @@
-# On-demand OS patching, rolling one node at a time — never all 3 at once,
-# which would risk losing etcd quorum mid-patch if a reboot takes a node
-# down while another is already out for maintenance.
+# On-demand OS patching, one node at a time. Each node is its own
+# single-node cluster now — there's no etcd quorum shared across nodes to
+# protect, and nowhere to drain a node's workloads *to* within its own
+# cluster, so this no longer drains/uncordons (that delegate_to-a-sibling
+# pattern only made sense when nodes were peers in one shared cluster).
+# `serial: 1` stays anyway, purely as a light habit — don't reboot staging
+# and production in the same instant — not for any quorum reason.
 - name: Patch OS packages and reboot if needed (one node at a time)
   hosts: k3s_server
   become: true
@@ -17,17 +21,7 @@
         path: /var/run/reboot-required
       register: reboot_required
 
-    - name: Drain this node before rebooting
-      ansible.builtin.command: k3s kubectl drain {{ inventory_hostname }} --ignore-daemonsets --delete-emptydir-data --timeout=120s
-      delegate_to: "{{ groups['k3s_server'] | difference([inventory_hostname]) | first }}"
-      when: reboot_required.stat.exists
-
     - name: Reboot
       ansible.builtin.reboot:
         reboot_timeout: 300
-      when: reboot_required.stat.exists
-
-    - name: Uncordon this node
-      ansible.builtin.command: k3s kubectl uncordon {{ inventory_hostname }}
-      delegate_to: "{{ groups['k3s_server'] | difference([inventory_hostname]) | first }}"
       when: reboot_required.stat.exists

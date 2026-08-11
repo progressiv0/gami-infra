@@ -1,15 +1,16 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Overrides base's `namespace: gami` — staging and production share one
-# cluster (3-node k3s), so they need separate namespaces or resource names
-# would collide.
+# Overrides base's `namespace: gami` — kept distinct from production's
+# namespace even though they now live on fully separate clusters, so
+# resource names stay unambiguous if that ever changes.
 namespace: gami-staging
 
 resources:
   - ../../base
   - sealed-secrets
-  - postgres.yaml
+  - postgres-cluster.yaml
+  - mailpit.yaml
 
 # See overlays/production/kustomization.yaml for why this is disabled.
 generatorOptions:
@@ -24,8 +25,8 @@ configMapGenerator:
       - NEXTAUTH_URL=https://staging.authenticmemory.org
       - SECURE_COOKIES=true
       - AUTH_TRUST_HOST=true
-      - SMTP_HOST=smtp.example.com
-      - SMTP_PORT=587
+      - SMTP_HOST=mailpit
+      - SMTP_PORT=1025
       - SMTP_SECURE=false
       - SMTP_FROM=noreply@authenticmemory.org
       - SMTP_FROM_NAME=Authentic Memory (staging)
@@ -100,17 +101,12 @@ patches:
                       name: gami-webapp
                       port:
                         number: 3000
-  # Node topology (README.md): staging's own pod PREFERS the staging node —
-  # a soft preference (preferredDuringScheduling), not a hard requirement,
-  # so a temporarily-unschedulable staging node doesn't leave it Pending
-  # forever. Deliberately different from production's podAntiAffinity
-  # (overlays/production/kustomization.yaml), which spreads prod across all
-  # 3 nodes for real redundancy — staging doesn't need that.
-  #
   # sync-wave 1: ArgoCD waits for wave 0 (gami-migrate-job.yaml's Job) to
   # report Healthy — which for a Job means Completed — before starting this
   # wave. This is what actually blocks the webapp rollout until migration
   # succeeds, replacing the PreSync-hook mechanism this used to rely on.
+  # No nodeAffinity here anymore — staging's cluster has exactly one node,
+  # so there's nothing to express a scheduling preference between.
   - target:
       kind: Deployment
       name: gami-webapp
@@ -121,15 +117,3 @@ patches:
         name: gami-webapp
         annotations:
           argocd.argoproj.io/sync-wave: "1"
-      spec:
-        template:
-          spec:
-            affinity:
-              nodeAffinity:
-                preferredDuringSchedulingIgnoredDuringExecution:
-                  - weight: 100
-                    preference:
-                      matchExpressions:
-                        - key: env
-                          operator: In
-                          values: ["staging"]

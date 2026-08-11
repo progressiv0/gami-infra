@@ -2,7 +2,7 @@
 # so `terraform apply` from a GitHub Actions workflow_dispatch runner (a
 # fresh checkout every time) still sees the real state.
 #
-# The bucket ("gami-prod-backup") must be created once, out of band, before
+# The bucket ("gami-s3") must be created once, out of band, before
 # the first `terraform init` — Terraform won't create its own state bucket.
 # Shared with production's CNPG S3 backups
 # (overlays/production/database/postgres-cluster.yaml's ObjectStore), under
@@ -13,7 +13,7 @@
 # never committed here.
 #
 # NOTE: this bucket was renamed from "gami-backup" (key was
-# "infra/terraform.tfstate") to "gami-prod-backup" (key
+# "infra/terraform.tfstate") to "gami-s3" (key
 # "tf-infrastructure/terraform.tfstate"). Changing a Terraform S3 backend's
 # bucket/key does NOT move the underlying state object — that needs
 # `terraform init -migrate-state` (or a manual object copy) run by hand
@@ -21,7 +21,7 @@
 # object first. Do this before running `terraform` again with this config.
 terraform {
   backend "s3" {
-    bucket                      = "gami-prod-backup"
+    bucket                      = "gami-s3"
     key                         = "tf-infrastructure/terraform.tfstate"
     region                      = "Falkenstein"
     endpoints                   = { s3 = "https://fsn1.your-objectstorage.com" }

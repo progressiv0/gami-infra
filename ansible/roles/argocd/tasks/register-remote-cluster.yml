@@ -1,0 +1,97 @@
+---
+# Wires production into staging's ArgoCD as a registered remote cluster —
+# the standard ArgoCD multi-cluster pattern: a Secret labeled
+# argocd.argoproj.io/secret-type: cluster in ArgoCD's own namespace,
+# containing the remote cluster's API server URL + credentials. Runs on
+# env_staging (where ArgoCD lives); `prod_node` (passed in by
+# playbooks/site.yml) is delegated to for everything that has to happen on
+# the prod cluster itself.
+- name: Create the argocd-manager ServiceAccount on the prod cluster
+  ansible.builtin.command:
+    cmd: k3s kubectl create serviceaccount argocd-manager -n kube-system
+  delegate_to: "{{ prod_node }}"
+  register: sa_create
+  changed_when: "'created' in sa_create.stdout"
+  failed_when: >
+    sa_create.rc != 0 and
+    'AlreadyExists' not in sa_create.stderr
+
+- name: Grant argocd-manager cluster-admin on the prod cluster
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl create clusterrolebinding argocd-manager-binding
+      --clusterrole=cluster-admin --serviceaccount=kube-system:argocd-manager
+  delegate_to: "{{ prod_node }}"
+  register: crb_create
+  changed_when: "'created' in crb_create.stdout"
+  failed_when: >
+    crb_create.rc != 0 and
+    'AlreadyExists' not in crb_create.stderr
+
+# k3s 1.24+ no longer auto-creates a token Secret for every ServiceAccount
+# — it must be requested explicitly.
+- name: Render the argocd-manager token Secret manifest
+  ansible.builtin.copy:
+    dest: /tmp/argocd-manager-token-secret.yaml
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: argocd-manager-token
+        namespace: kube-system
+        annotations:
+          kubernetes.io/service-account.name: argocd-manager
+      type: kubernetes.io/service-account-token
+  delegate_to: "{{ prod_node }}"
+
+- name: Apply the argocd-manager token Secret
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f /tmp/argocd-manager-token-secret.yaml
+  delegate_to: "{{ prod_node }}"
+  changed_when: true
+
+- name: Wait for the token to be populated
+  ansible.builtin.command:
+    cmd: k3s kubectl -n kube-system get secret argocd-manager-token -o jsonpath='{.data.token}'
+  delegate_to: "{{ prod_node }}"
+  register: sa_token_raw
+  until: sa_token_raw.stdout | length > 0
+  retries: 10
+  delay: 3
+  changed_when: false
+
+- name: Read the prod cluster's CA certificate
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/tls/server-ca.crt
+  delegate_to: "{{ prod_node }}"
+  register: prod_ca_cert_raw
+
+- name: Build facts for rendering the cluster-registration Secret
+  ansible.builtin.set_fact:
+    prod_sa_token: "{{ sa_token_raw.stdout | b64decode }}"
+    prod_ca_cert_b64: "{{ prod_ca_cert_raw.content }}"
+    # hostvars[prod_node].argocd_link_ip is the static inventory's hand-set
+    # address on the dedicated argocd-link network (see
+    # inventory/production.yml) — the only address staging can reach prod's
+    # :6443 on (terraform/main.tf's argocd_link firewall only admits that
+    # subnet).
+    prod_api_server: "https://{{ hostvars[prod_node].argocd_link_ip }}:6443"
+
+- name: Render the ArgoCD cluster-registration Secret
+  ansible.builtin.template:
+    src: cluster-secret.yaml.j2
+    dest: /tmp/argocd-prod-cluster-secret.yaml
+    mode: "0600"
+
+- name: Apply the cluster-registration Secret to staging's ArgoCD
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f /tmp/argocd-prod-cluster-secret.yaml
+  changed_when: true
+
+- name: Apply ArgoCD Application manifests targeting the registered remote cluster
+  ansible.builtin.command:
+    cmd: "k3s kubectl apply -f {{ argocd_app_path }}/{{ item }}"
+  loop: "{{ argocd_remote_apps }}"
+  when: argocd_remote_apps | length > 0
+  changed_when: true

@@ -1,0 +1,30 @@
+# Child of the App-of-Apps parent (argocd/app-cluster-operators-production.yaml).
+# Wave 0 — no dependencies. The Barman Cloud plugin (wave 1) needs
+# cert-manager's Certificate/Issuer CRDs to already exist before it applies
+# its own self-signed mTLS cert/issuer. Applied against the registered
+# remote "prod" cluster. Source directory (cluster-operators/cert-manager/)
+# is shared, cluster-agnostic — staging's copy of this Application
+# (apps-staging/cert-manager.yaml) references the exact same path, just
+# with a different destination.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-operators-cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/progressiv0/gami-infra
+    targetRevision: main
+    path: cluster-operators/cert-manager
+  destination:
+    name: prod
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

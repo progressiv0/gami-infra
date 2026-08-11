@@ -1,0 +1,29 @@
+# Staging's Postgres, on CloudNativePG — single instance only (this
+# cluster has exactly one node, so there's nothing to replicate across).
+# CNPG is used here purely for its tooling (a real Postgres operator,
+# consistent with production), not HA — there's deliberately no
+# ObjectStore/ScheduledBackup/plugins here, unlike production's. Staging
+# has no backup at all — a documented tradeoff, not an oversight (see
+# README-staging.md).
+#
+# CNPG auto-generates the `gami` user's password and publishes a Secret
+# named `gami-postgres-app` (key: uri), which gami-webapp/gami-migrate
+# already expect via secretKeyRef — no app-side change needed, and no
+# hand-sealed SealedSecret for this one (unlike the plain-Postgres
+# Deployment this replaces).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: gami-postgres
+spec:
+  instances: 1
+  storage:
+    storageClass: local-path
+    size: 25Gi
+  bootstrap:
+    initdb:
+      database: gami
+      owner: gami
+  postgresql:
+    pg_hba:
+      - host gami gami 10.0.0.0/8 scram-sha-256

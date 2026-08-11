@@ -1,9 +1,14 @@
 # Deliberately NOT yet added to ansible/roles/argocd/defaults/main.yml's
-# argocd_gami_environments list — this file exists so it's ready to go, but
+# argocd_remote_apps list — this file exists so it's ready to go, but
 # gami-webapp/gami-migrate don't get deployed until the app itself is ready
 # (see overlays/production/database/'s own Application, which IS deployed
-# now). Bring this online later by adding "production-webapp" to that list
-# — no other change needed at that point.
+# now). Bring this online later by adding "app-gami-production-webapp.yaml"
+# to that list — no other change needed at that point.
+#
+# Applied against the registered remote "prod" cluster, not the local one
+# ArgoCD itself runs on (that's staging — see ansible/roles/argocd/tasks/
+# register-remote-cluster.yml, which creates the "prod" cluster Secret this
+# destination.name refers to).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -16,7 +21,7 @@ spec:
     targetRevision: main
     path: overlays/production/webapp
   destination:
-    server: https://kubernetes.default.svc
+    name: prod
     namespace: gami
   syncPolicy:
     automated:

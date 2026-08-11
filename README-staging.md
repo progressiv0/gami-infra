@@ -1,56 +1,95 @@
 # Staging deployment guide
 
-Deploys the shared staging environment onto the real 3-node Hetzner k3s
-cluster. Dev, staging, and production run on the **same cluster**, in
-separate namespaces (`gami-dev`, `gami-staging`, `gami`) — this guide only
-covers what's different for staging; read [README.md](README.md) first for
-what each piece actually is, especially its **"Node topology"** section
-(staging is "home" to its own small node, but that's a scheduling
-preference, not a separate cluster).
+Deploys staging onto its own independent, single-node k3s cluster (node
+`gami-staging`), and — because this cluster is also where the one central
+ArgoCD instance lives — bootstrapping staging is also how the **whole
+real infrastructure** comes up, production included. Read
+[README.md](README.md) first for what each piece actually is, especially
+its **"Node topology"** section: staging and production are two fully
+separate clusters now, on two pre-existing nodes, not two namespaces on one
+shared cluster.
 
 > **Status check before you start**: `terraform/` in this repo is written
 > but has **not** been run through `terraform validate`/`plan`/`apply` yet
 > (see `terraform/README.md`) — there was no `terraform` binary in the
 > environment it was authored in. Treat the Terraform step below like an
 > unreviewed first-pass PR: read it, run `terraform plan` and actually look
-> at the diff, never `apply` blind the first time. Everything from the
-> Ansible step onward (k3s, ArgoCD) has been exercised end-to-end against a
-> real multi-node cluster (see [README-local.md](README-local.md)'s gotchas
-> section for what was found and fixed doing so) — it's the Terraform
-> provisioning step specifically that's unproven.
+> at the diff, never `apply` blind the first time. **Pay special attention
+> to what the plan proposes touching**: `terraform/main.tf` only reads the
+> two servers (`data "hcloud_server"`) and attaches networking/firewalls to
+> them — it should never propose creating, resizing, or destroying a
+> server. If a plan ever does, something's misconfigured (most likely a
+> `nodes` entry in `terraform/variables.tf` whose `name` doesn't exactly
+> match the real Hetzner server name) — stop and fix that before applying.
+> Everything from the Ansible step onward (k3s, ArgoCD) has been exercised
+> end-to-end against a real single-node cluster (see
+> [README-local.md](README-local.md)'s gotchas section for what was found
+> and fixed doing so) — it's the Terraform networking step specifically
+> that's unproven.
 
-If the cluster already exists (someone already ran the Terraform+Ansible
-bootstrap), skip to [Deploying an app change to
+If the infrastructure already exists (someone already ran the
+Terraform+Ansible bootstrap), skip to [Deploying an app change to
 staging](#deploying-an-app-change-to-staging) — that's the day-to-day path
 you'll actually use most of the time.
 
 ---
 
-## One-time cluster bootstrap
+## One-time infrastructure bootstrap
 
-Skip this whole section if the 3-node cluster is already running — check
-with your team, or try `kubectl get nodes` against the existing kubeconfig
-first. This is done **once for the whole cluster**, not once per
-environment — if dev or production has already bootstrapped it, skip ahead.
+Skip this whole section if staging and production are already up — check
+with your team, or try pointing `kubectl` at staging's kubeconfig and
+running `kubectl get nodes` first. This is done **once for both clusters**
+— running staging's bootstrap also brings production's ArgoCD management
+online (see step 3 below), so there's no separate "production bootstrap."
 
 ### 1. Prerequisites
 
-- A Hetzner Cloud account + API token (`hcloud_token`).
+**Every credential this repo's automation needs is an environment
+variable — none of them are committed.** `.env.example` at the repo root
+is the single list of all of them (which tool reads each one, and which
+ones are optional); copy it to `.env`, fill in real values, and `set -a;
+source .env; set +a` before running any `terraform`/`ansible` command
+below, rather than exporting each one by hand. The bullets below are the
+same list with the reasoning for each:
+
+- A Hetzner Cloud account + API token (`TF_VAR_hcloud_token`), with access
+  to the two **already-provisioned** servers `gami-staging` and
+  `gami-prod`. Terraform never creates these — see the status check above.
+- Their real public IPs (`GAMI_STAGING_IP`, `GAMI_PROD_IP`) — deliberately
+  not committed to this public repo (see `ansible/inventory/production.yml`).
+- Root (or equivalent) SSH access to both servers already working, from
+  however they were originally provisioned — Ansible's `node_baseline` role
+  creates the non-root `ops` user (`ansible_user: ops` in
+  `ansible/inventory/production.yml`) and installs your key for it on first
+  run, but that first connection has to land as `root` (or another
+  already-privileged account) using whatever access you already have to
+  these pre-existing boxes. If the key you connect with isn't already
+  found via ssh-agent/`~/.ssh/config`, point `GAMI_SSH_PRIVATE_KEY_PATH` at
+  it explicitly.
+- If `gami-infra` (this repo) is a **private** GitHub repo: a fine-grained
+  PAT with read-only Contents access (`GAMI_INFRA_REPO_TOKEN`) — ArgoCD
+  (which only ever runs on staging) needs it to clone the repo it's
+  managing both clusters from. See
+  `ansible/roles/argocd/tasks/repo-credentials.yml` — this is the step
+  that's easy to forget since it used to be a manual `argocd repo add`
+  outside of git; it's now automatic as part of `site.yml`, as long as the
+  token is set. Leave unset entirely for a public repo.
 - A Hetzner Object Storage bucket named `gami-tfstate` created **out of
   band** — Terraform's S3 backend (`terraform/backend.tf`) won't create its
-  own bucket. Also generate Object Storage access keys for it. (Production's
-  Postgres backups reuse this same bucket under a different key prefix —
-  see [README-production.md](README-production.md) — nothing extra needed
+  own bucket. Also generate Object Storage access keys for it
+  (`HETZNER_S3_ACCESS_KEY`/`HETZNER_S3_SECRET_KEY`). (Production's Postgres
+  backups reuse this same bucket under a different key prefix — see
+  [README-production.md](README-production.md) — nothing extra needed
   here.)
-- Your SSH public key (installed on all 3 nodes for the `ops` user).
-- Your own outbound IP (or CIDR) — used to restrict SSH/k3s-API firewall
-  rules to just you, never `0.0.0.0/0`.
-- `terraform` (>= 1.7) and `kubectl` installed locally, or run everything
-  via the `workflow_dispatch` GitHub Actions path described in the design
-  plan (`.claude/plans/infrastructure-cicd-plan.md`, Phase 5) if you'd
-  rather not install Terraform locally.
+- Your own outbound IP (or CIDR) — `TF_VAR_admin_ip_cidr`, used to restrict
+  SSH/k3s-API firewall rules to just you, never `0.0.0.0/0`.
+- `terraform` (>= 1.7), `ansible-core`, and `kubectl` installed locally.
 
-### 2. Provision the VPS nodes (Terraform)
+### 2. Attach networking and firewalls (Terraform)
+
+With `.env` sourced (step 1 above — this is where `TF_VAR_hcloud_token`,
+`TF_VAR_admin_ip_cidr`, `HETZNER_S3_ACCESS_KEY`, `HETZNER_S3_SECRET_KEY`
+actually get picked up from):
 
 ```bash
 cd gami-infra/terraform
@@ -59,131 +98,147 @@ terraform init \
   -backend-config="access_key=$HETZNER_S3_ACCESS_KEY" \
   -backend-config="secret_key=$HETZNER_S3_SECRET_KEY"
 
-TF_VAR_hcloud_token="<your Hetzner API token>" \
-TF_VAR_admin_ip_cidr="<your IP>/32" \
-TF_VAR_ssh_public_key="$(cat ~/.ssh/id_ed25519.pub)" \
-  terraform plan
+terraform plan
 ```
 
 **Read the plan output carefully** before proceeding — this is the
-unvalidated-HCL step called out above. Look for: 3 `hcloud_server` resources
-(`gami-node-dev`, `gami-node-staging`, `gami-node-prod` — different
-`server_type` each, per `terraform/variables.tf`'s `nodes` list), one
-`hcloud_network` + subnet, one `hcloud_firewall` with the rules described in
-[README.md](README.md)'s Terraform section, one `hcloud_ssh_key`. Confirm
-each server's `labels` includes both `role=k3s-server` and the right `env`
-value (`dev`/`staging`/`prod`) — that `env` label is what Ansible later turns
-into a real Kubernetes node label, which the overlays' node
-affinity/anti-affinity rules depend on.
+unvalidated-HCL step called out above. Confirm it proposes only: 2
+`data "hcloud_server"` reads (no creates), one `hcloud_network` +
+`hcloud_network_subnet` for the dedicated `gami-argocd-link` network
+(`10.10.0.0/24`), two `hcloud_server_network` attachments pinning
+`gami-staging` to `10.10.0.2` and `gami-prod` to `10.10.0.3`, the main
+`hcloud_firewall` (22/6443 restricted to `admin_ip_cidr`, 80/443 public)
+attached to both servers, and a second `hcloud_firewall` opening 6443 only
+to the `10.10.0.0/24` subnet, attached only to `gami-prod`. **No `hcloud_server`
+resource should appear.**
 
 If the plan looks right:
 
 ```bash
-TF_VAR_hcloud_token="..." \
-TF_VAR_admin_ip_cidr="<your IP>/32" \
-TF_VAR_ssh_public_key="$(cat ~/.ssh/id_ed25519.pub)" \
-  terraform apply
+terraform apply
 ```
 
-Per the design plan, `terraform apply` is meant to run from a GitHub Actions
-`workflow_dispatch` job (gated, manual-trigger, audit-trailed) rather than
-routinely from a laptop — set that up if it doesn't already exist, otherwise
-running it locally as above works too, just without the audit trail.
+Note the outputs (`node_public_ips`, `node_argocd_link_ips`, `node_names`,
+`node_envs`) — worth confirming they look sane (2 distinct public IPs
+matching what's in `ansible/inventory/production.yml`, the `argocd_link`
+IPs matching `.2`/`.3`).
 
-Note the outputs (`node_public_ips`, `node_private_ips`, `node_names`,
-`node_envs`) — Ansible's dynamic inventory (`inventory/hcloud.yml`) sources
-these live from the Hetzner API via the `role=k3s-server` label and
-`keyed_groups` on the `env` label, so you don't need to manually copy IPs
-anywhere, but it's worth confirming they look sane (3 distinct IPs, correct
-`env` per node, matching the region you expected).
-
-### 3. Bootstrap k3s + ArgoCD (Ansible)
+### 3. Bootstrap both clusters + ArgoCD (Ansible)
 
 ```bash
 cd gami-infra/ansible
 
-# The dynamic inventory needs the hetzner.hcloud collection and your token:
-ansible-galaxy collection install hetzner.hcloud
-export HCLOUD_TOKEN="<same token as above>"
-
-ansible-playbook -i inventory/hcloud.yml playbooks/site.yml
+ansible-playbook -i inventory/production.yml playbooks/site.yml
 ```
 
-This is the real production-shaped bootstrap (see [README.md](README.md)'s
-Ansible section for exactly what each role does): `node-baseline` on all 3
-nodes, then the first node (alphabetically first by name — deterministic
-regardless of inventory ordering) runs `k3s --cluster-init`, then the other
-2 join it — every node also gets `--node-label env=<its env>` at install
-time. All 3 run the k3s **server** role — that's the HA design; losing any
-single node still leaves a 2-of-3 etcd quorum, regardless of which
-environment each node is "home" to.
+`inventory/production.yml` is a **static**, hand-maintained file now (not
+the old dynamic hcloud-API inventory) — since Terraform no longer owns
+these servers via the Hetzner API, it can't label them for dynamic
+discovery. Confirm the IPs and `hcloud_labels.env` values in that file
+actually match your two servers before running this.
 
-This step is idempotent — safe to re-run if it fails partway or if a node
+This one playbook run, in order (see [README.md](README.md)'s Ansible
+section for exactly what each role does):
+1. `node_baseline` on **both** nodes (apt hardening, `ops` user, ufw).
+2. `k3s_server` on **both** nodes, **independently** — each just runs
+   `k3s server --cluster-init` (single-node embedded etcd). Nothing joins
+   anything else; there's no "first node bootstraps, others join" phase
+   anymore.
+3. ArgoCD install, targeted at `env_staging` only (`run_once: true`) — this
+   is the **one central ArgoCD instance**, and it only ever lives on
+   staging. As part of this, `tasks/repo-credentials.yml` registers this
+   repo's git credentials with ArgoCD if `GAMI_INFRA_REPO_TOKEN` is set
+   (skips itself entirely for a public repo) — this used to be a manual
+   `argocd repo add` step done outside of git; it isn't anymore.
+4. **Register production as a remote cluster in staging's ArgoCD**
+   (`tasks_from: register-remote-cluster.yml`, also targeted at
+   `env_staging`, delegating the prod-side steps to `gami-prod` over SSH).
+   This is what actually brings production's ArgoCD management online — it
+   creates an `argocd-manager` ServiceAccount + `cluster-admin`
+   ClusterRoleBinding on `gami-prod`, reads back its token and CA cert, and
+   applies the resulting cluster-registration Secret to staging's ArgoCD.
+   From this point on, `kubectl get secret -n argocd -l
+   argocd.argoproj.io/secret-type=cluster` on staging should show a `prod`
+   entry.
+
+This step is idempotent — safe to re-run if it fails partway, or if a node
 gets added later.
 
-Confirm the node labels landed:
+Confirm both nodes came up:
 ```bash
-kubectl get nodes -L env
+KUBECONFIG=<staging kubeconfig> kubectl get nodes -L env   # just gami-staging
+KUBECONFIG=<prod kubeconfig> kubectl get nodes -L env      # just gami-prod, separately
 ```
-Should show `dev`, `staging`, `prod` (one each) in the `ENV` column.
+There's no single `kubectl get nodes` that shows both — they're two
+completely separate API servers now.
 
-**ArgoCD access after bootstrap**: same as local — Traefik exposes it on a
-NodePort (see `ansible/roles/argocd/defaults/main.yml`'s `argocd_ingress_port`,
-default 8443 internally / 30443 as the pinned NodePort) on every node's
-private IP. ArgoCD itself is scheduled with a preference for the `env=dev`
-node (it's cluster-wide infra riding on the small box). Get the admin
+**ArgoCD access after bootstrap**: Traefik exposes it on a NodePort (see
+`ansible/roles/argocd/defaults/main.yml`'s `argocd_ingress_port`, default
+8443 internally / 30443 as the pinned NodePort) on `gami-staging`'s IP only
+— there's no ArgoCD instance on `gami-prod` to reach. Get the admin
 password:
 ```bash
-kubectl -n argocd get secret argocd-initial-admin-secret \
+KUBECONFIG=<staging kubeconfig> kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 For anything beyond one-off checks, put this behind a real hostname +
 Let's Encrypt cert (an `Ingress`/`IngressRoute` with
 `cert-manager.io/cluster-issuer: letsencrypt-production`) rather than relying
-on the raw NodePort long-term.
+on the raw NodePort long-term. Once logged in, you should see **both**
+clusters listed under Settings → Clusters — `in-cluster` (staging, where
+ArgoCD itself runs) and `prod` (the registered remote).
 
 ### 4. Cluster operators (cert-manager, CNPG, Sealed Secrets) — automatic, just confirm they came up
 
 Unlike an earlier version of this repo, **none of these are a manual
-install step anymore** — `argocd/app-cluster-operators.yaml` (an
-App-of-Apps parent, see [README.md](README.md)'s `cluster-operators/`
-section) applies all of them automatically as soon as ArgoCD itself
-exists, since `site.yml`'s `argocd` role applies every file in `argocd/`
-including this one. Just confirm they actually came up before moving on —
-if the underlying `kubectl apply -f argocd/` step in `site.yml` ran, these
-should already be `Synced`/`Healthy`:
+install step anymore** — `argocd/app-cluster-operators-staging.yaml` and
+`app-cluster-operators-production.yaml` (both App-of-Apps parents, see
+[README.md](README.md)'s `cluster-operators/` section) apply all of them
+automatically as soon as ArgoCD exists and production is registered, since
+step 3 above applies both. Just confirm they actually came up:
 
 ```bash
-kubectl get application cluster-operators -n argocd
-# or, since the children aren't labeled that way by default, just:
-kubectl get pods -n cert-manager
-kubectl get pods -n cnpg-system
-kubectl get pods -n kube-system -l name=sealed-secrets-controller
+# On staging:
+KUBECONFIG=<staging kubeconfig> kubectl get application cluster-operators-staging -n argocd
+KUBECONFIG=<staging kubeconfig> kubectl get pods -n cert-manager
+KUBECONFIG=<staging kubeconfig> kubectl get pods -n cnpg-system
+KUBECONFIG=<staging kubeconfig> kubectl get pods -n kube-system -l name=sealed-secrets-controller
+
+# On production (separate cluster, separate kubeconfig):
+KUBECONFIG=<prod kubeconfig> kubectl get pods -n cert-manager
+KUBECONFIG=<prod kubeconfig> kubectl get pods -n cnpg-system
+KUBECONFIG=<prod kubeconfig> kubectl get pods -n kube-system -l name=sealed-secrets-controller
+# Barman Cloud plugin — production only, staging has no backup:
+KUBECONFIG=<prod kubeconfig> kubectl get pods -n cnpg-system -l app.kubernetes.io/name=barman-cloud
 ```
 
 If they're not there yet, ArgoCD may not have gotten to its first sync —
-force it:
+force it from staging's ArgoCD (it manages both):
 ```bash
-kubectl patch application cluster-operators -n argocd --type merge \
+kubectl patch application cluster-operators-staging -n argocd --type merge \
+  -p '{"operation":{"sync":{"revision":"HEAD"},"initiatedBy":{"username":"admin"}}}'
+kubectl patch application cluster-operators-production -n argocd --type merge \
   -p '{"operation":{"sync":{"revision":"HEAD"},"initiatedBy":{"username":"admin"}}}'
 ```
 
-Staging's Postgres (`overlays/staging/postgres.yaml`) doesn't use CNPG at
-all — it's a plain `postgres:16-alpine` Deployment, since staging never
-needed CNPG's HA/backup features (see [README.md](README.md)'s "Node
-topology" section). CNPG is only relevant here because **production**
-still uses it (`overlays/production/database/postgres-cluster.yaml`) —
-everything's on k3s's own bundled `local-path` storage class either way.
+Staging's Postgres (`overlays/staging/postgres-cluster.yaml`) **is** CNPG
+now — same operator as production, `instances: 1`, but with **no backup at
+all** (no `ObjectStore`/`ScheduledBackup`/Barman plugin) — a documented,
+deliberate tradeoff, not an oversight. CNPG auto-generates and manages the
+`gami-postgres-app` Secret itself; there's no hand-sealing step for it the
+way an earlier plain-Postgres-Deployment design needed.
 
 **Sealed Secrets lands in `kube-system`, not its own namespace** — the
 upstream `controller.yaml` hardcodes that namespace on every resource it
-defines, so it's not something this repo's Application `destination`
-controls. `kubeseal --fetch-cert` needs `--controller-namespace kube-system
+defines. `kubeseal --fetch-cert` needs `--controller-namespace kube-system
 --controller-name sealed-secrets-controller` to match (see the secrets
-bootstrap steps below).
+bootstrap steps below). Staging and production each run their **own**
+Sealed Secrets controller with their **own** keypair — a SealedSecret
+sealed against one is permanently undecryptable against the other, so
+always fetch the cert from the cluster you're actually sealing for.
 
 Traefik does **not** need separate installation — k3s bundles it (that's why
-`k3s_disable` in `ansible/roles/k3s-server/defaults/main.yml` disables
+`k3s_disable` in `ansible/roles/k3s_server/defaults/main.yml` disables
 `servicelb`, not Traefik).
 
 ### 5. Create the image pull secret
@@ -205,64 +260,53 @@ story.
 ### 6. Seal staging's secrets
 
 Staging needs its **own**, independently-generated secrets — never copy
-dev's or production's. `gami-webapp` doesn't need much: no separate backend
-service exists anymore (see [README.md](README.md)), so the only app secret
-is `NEXTAUTH_SECRET`.
+production's. `gami-webapp` doesn't need much: no separate backend service
+exists anymore (see [README.md](README.md)), so the only app secret is
+`NEXTAUTH_SECRET`.
 
 ```bash
 NEXTAUTH_SECRET=$(openssl rand -hex 32)
 
-# Fetch the cluster's public key (safe from anywhere — encrypt-only)
+# Fetch STAGING's own controller's public key (safe from anywhere — encrypt-only)
 kubeseal --fetch-cert \
   --controller-namespace kube-system \
-  --controller-name sealed-secrets-controller > /tmp/sealed-secrets-cert.pem
+  --controller-name sealed-secrets-controller > /tmp/sealed-secrets-cert-staging.pem
 
 # Seal straight into the staging overlay
 kubectl create secret generic gami-secrets \
   --namespace gami-staging \
   --from-literal=NEXTAUTH_SECRET="$NEXTAUTH_SECRET" \
   --dry-run=client -o yaml \
-  | kubeseal --cert /tmp/sealed-secrets-cert.pem -o yaml \
+  | kubeseal --cert /tmp/sealed-secrets-cert-staging.pem -o yaml \
   > overlays/staging/sealed-secrets/gami-secrets.yaml
-
-# SMTP — real values from your email provider, provided out of band
-kubectl create secret generic gami-smtp \
-  --namespace gami-staging \
-  --from-literal=SMTP_USER="<real SMTP username>" \
-  --from-literal=SMTP_PASS="<real SMTP password>" \
-  --dry-run=client -o yaml \
-  | kubeseal --cert /tmp/sealed-secrets-cert.pem -o yaml \
-  > overlays/staging/sealed-secrets/gami-smtp.yaml
-
-# gami-postgres-app — staging's Postgres (overlays/staging/postgres.yaml)
-# is a plain Deployment, not CNPG, so there's no operator to auto-generate
-# this Secret. Needs both the postgres container's own bootstrap env vars
-# AND the uri gami-webapp/gami-migrate read via secretKeyRef.
-POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9')
-kubectl create secret generic gami-postgres-app \
-  --namespace gami-staging \
-  --from-literal=POSTGRES_DB=gami_staging \
-  --from-literal=POSTGRES_USER=gami \
-  --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-  --from-literal=uri="postgresql://gami:${POSTGRES_PASSWORD}@gami-postgres:5432/gami_staging?sslmode=disable" \
-  --dry-run=client -o yaml \
-  | kubeseal --cert /tmp/sealed-secrets-cert.pem -o yaml \
-  > overlays/staging/sealed-secrets/gami-postgres-app.yaml
 ```
+
+That's the **only** secret staging needs to hand-seal:
+- **No `gami-smtp.yaml`** — staging uses Mailpit (`overlays/staging/mailpit.yaml`)
+  as its SMTP catcher (`SMTP_HOST=mailpit`, `SMTP_PORT=1025` in
+  `overlays/staging/kustomization.yaml`'s `configMapGenerator`) instead of
+  real SMTP credentials. Outbound email (magic-link sign-in, DID-publish
+  notices) lands in Mailpit's own store instead of actually being sent
+  anywhere — read a captured message with `kubectl port-forward -n
+  gami-staging svc/mailpit 8025:8025` and browsing to `localhost:8025`.
+  Deliberately not exposed via NodePort/Ingress, since it captures real
+  single-use sign-in links.
+- **No `gami-postgres-app.yaml`** — staging's Postgres is CNPG
+  (`overlays/staging/postgres-cluster.yaml`), which auto-generates and
+  manages that Secret itself. There's no plain Deployment here anymore to
+  hand-seal one for.
 
 Institution signing keys are **not** a cluster secret at all — they're
 per-institution application data managed in Postgres (`gami-app`'s
 `src/lib/institution-keys.ts`), created through the app's own UI/API, not
 sealed here.
 
-Then add all three filenames to `overlays/staging/sealed-secrets/kustomization.yaml`'s
-`resources:` list (it starts empty), commit, and push:
+`overlays/staging/sealed-secrets/kustomization.yaml`'s `resources:` list
+already just has:
 
 ```yaml
 resources:
   - gami-secrets.yaml
-  - gami-smtp.yaml
-  - gami-postgres-app.yaml
 ```
 
 ```bash
@@ -274,9 +318,8 @@ git push
 ### 7. Apply the ArgoCD Application
 
 If `site.yml`'s `argocd` role already applied `argocd/app-gami-staging.yaml`
-(it does, as part of `argocd/*.yaml`), staging should already show up in
-`kubectl get applications -n argocd`. If not, or if you're adding staging to
-an existing cluster that only had other environments before:
+(it does, as part of `argocd_local_apps`), staging should already show up
+in `kubectl get applications -n argocd`. If not:
 
 ```bash
 kubectl apply -f argocd/app-gami-staging.yaml
@@ -290,15 +333,15 @@ kubectl get application gami-staging -n argocd -w
 
 `SYNC STATUS` should move from `OutOfSync`/`Unknown` to `Synced`, and
 `HEALTH STATUS` to `Healthy` once the migrate Job completes, the CNPG
-`Cluster` provisions, and the Deployment comes up.
+`Cluster` provisions, Mailpit comes up, and the Deployment comes up.
 
 ---
 
 ## Deploying an app change to staging
 
-This is the day-to-day path once the cluster exists. Staging deploys are
-**not** gated behind the same manual release process as production — bump
-the image tag directly and push:
+This is the day-to-day path once the infrastructure exists. Staging deploys
+are **not** gated behind the same manual release process as production —
+bump the image tag directly and push:
 
 ```bash
 cd overlays/staging
@@ -317,10 +360,10 @@ sync from the ArgoCD UI/CLI. No SSH, no manual `kubectl apply` needed for a
 routine image bump.
 
 **What happens on sync, in order:**
-1. `gami-migrate` Job (PreSync hook) runs `npm run db:setup` against the
+1. `gami-migrate` Job (sync-wave 0) runs `npm run db:setup` against the
    `-migrate` image tag — must complete successfully before anything else
    proceeds.
-2. The `gami-webapp` Deployment rolls out (single pod for staging), gated by
+2. The `gami-webapp` Deployment rolls out (single pod), gated by
    its readiness probe (`/api/public/health`).
 
 **Non-image changes** (config, hostnames) — edit
@@ -334,13 +377,6 @@ auto-sync applies.
 ```bash
 kubectl get pods -n gami-staging
 kubectl get application gami-staging -n argocd
-```
-
-Confirm the pod actually landed on the staging node (soft preference, so
-check it's actually being honored, not just hoped for):
-```bash
-kubectl get pods -n gami-staging -o wide
-kubectl get nodes -L env
 ```
 
 Hit both hostnames from outside the cluster:
@@ -361,6 +397,13 @@ current `gami-webapp` pod:
 kubectl get pods -n gami-staging -o wide
 ```
 
+Confirm the app is actually using Mailpit, not trying (and failing) to
+reach a real SMTP server: trigger a magic-link sign-in and check
+```bash
+kubectl port-forward -n gami-staging svc/mailpit 8025:8025
+```
+then browse to `localhost:8025` and confirm the message landed there.
+
 ---
 
 ## Troubleshooting
@@ -377,12 +420,17 @@ Staging-specific things to check first:
   `ghcr.io/authenticmemory/*` — a typo'd tag just shows as `ImagePullBackOff`.
 - `ghcr-pull-secret` exists in the `gami-staging` namespace specifically —
   it's namespace-scoped, so it won't help if it was only created in `gami`
-  (production's) or `gami-dev`.
-- Staging's Postgres (`overlays/staging/postgres.yaml`, a plain
-  `postgres:16-alpine` Deployment — no CNPG) is a **single instance with no
-  backup** — that's intentional (staging doesn't need high reliability),
-  not a bug. Don't expect it to survive losing the staging node; just
-  re-sync if that happens. If it's stuck `CreateContainerConfigError` or
-  the Deployment can't start, check whether `gami-postgres-app` has
-  actually been sealed yet (see `overlays/staging/sealed-secrets/kustomization.yaml`'s
-  comment) — there's no CNPG operator anymore to auto-generate it.
+  (production's namespace, on production's separate cluster).
+- Staging's Postgres (`overlays/staging/postgres-cluster.yaml`, CNPG,
+  `instances: 1`) has **no backup at all** — that's intentional (staging
+  doesn't need to survive data loss the way production does), not a bug.
+  Don't expect it to survive anything worse than a pod restart; if the
+  `Cluster` itself gets wedged, see [README-local.md](README-local.md)'s
+  CNPG gotcha.
+- If production's Applications (`kubectl get applications -n argocd` on
+  staging — they show up there too, since staging's ArgoCD manages both)
+  are stuck `Unknown`, check that the remote-cluster registration actually
+  succeeded: `kubectl get secret -n argocd -l
+  argocd.argoproj.io/secret-type=cluster` should show a `prod` entry. If
+  it's missing, re-run `site.yml` (idempotent) or the
+  `register-remote-cluster.yml` tasks by hand.

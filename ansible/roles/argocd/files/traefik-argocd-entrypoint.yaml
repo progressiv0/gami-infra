@@ -22,6 +22,6 @@ spec:
         expose:
           default: true
         # Pinned so the NodePort is stable across re-renders — servicelb is
-        # disabled (see k3s-server/defaults/main.yml), so this NodePort,
+        # disabled (see k3s_server/defaults/main.yml), so this NodePort,
         # reachable on any node's IP, is the actual access path, not `port`.
         nodePort: 30443

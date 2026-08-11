@@ -1,0 +1,29 @@
+# App-of-Apps parent for production's cluster: its "manifests" are the
+# child Application objects in cluster-operators/apps-production/
+# (cert-manager, cnpg, sealed-secrets, plus the Barman Cloud plugin for
+# production's S3 backups). Nesting is required, not stylistic —
+# argocd.argoproj.io/sync-wave on an Application resource is only honored
+# when some OTHER sync operation places it into ordered waves; it's inert on
+# a standalone, directly-applied Application. Nesting under this parent is
+# what makes cert-manager/cnpg/sealed-secrets (wave 0) actually finish
+# syncing+healthy before the Barman plugin (wave 1) starts. Applied against
+# the registered remote "prod" cluster, not the local one ArgoCD itself
+# runs on.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-operators-production
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/progressiv0/gami-infra
+    targetRevision: main
+    path: cluster-operators/apps-production
+  destination:
+    name: prod
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

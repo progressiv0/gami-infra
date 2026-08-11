@@ -1,3 +1,7 @@
+# Applied against the registered remote "prod" cluster, not the local one
+# ArgoCD itself runs on (that's staging — see ansible/roles/argocd/tasks/
+# register-remote-cluster.yml, which creates the "prod" cluster Secret this
+# destination.name refers to).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -10,7 +14,7 @@ spec:
     targetRevision: main
     path: overlays/production/database
   destination:
-    server: https://kubernetes.default.svc
+    name: prod
     namespace: gami
   syncPolicy:
     automated:

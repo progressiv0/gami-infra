@@ -1,18 +1,27 @@
-# Production's Postgres — the only environment with HA + S3 backup.
-# Node-loss tolerance comes from CloudNativePG itself, not the storage
-# layer: it replicates at the Postgres level (streaming replication,
-# automatic failover if the primary dies), and each of the 3 instances gets
-# its own independent PV via `topologyKey: kubernetes.io/hostname`, which
-# spreads them across all 3 nodes (dev/staging/prod), never doubling up on
-# one — this is the same mechanism that lets prod's webapp replicas
-# spread across all 3 nodes too (see the podAntiAffinity patch in
-# ../webapp/kustomization.yaml). Losing the prod node specifically still
-# leaves 2 of 3 Postgres instances up, on the dev/staging nodes — no
-# replicated block storage (e.g. Longhorn) needed underneath, since CNPG
-# already replicates the data at the database level; adding storage-level
-# replication on top would just be a second, redundant copy of the same
-# guarantee. Total loss of all 3 instances is what the S3/Barman backup
-# below is for.
+# Production's Postgres — the only environment with backup. Single
+# instance (`instances: 1`): production is its own single-node cluster now,
+# so there's no second node for CloudNativePG to stream-replicate to —
+# durability comes entirely from the continuous WAL archiving + nightly
+# base backup below, not from live replication. No `affinity` block either
+# (nothing to spread across).
+#
+# Continuous, transaction-granularity point-in-time recovery, not just a
+# once-a-day snapshot: the Barman plugin below already runs
+# `isWALArchiver: true`, which ships completed WAL segments to S3
+# continuously — but Postgres only "completes" a segment once it fills to
+# 16MB or `archive_timeout` elapses (default: disabled). For a batch-driven
+# workload, that could leave a batch's committed transactions unarchived
+# for a long time if it doesn't happen to fill a segment. `archive_timeout:
+# 60s` below forces a WAL push on a timer regardless of fullness, bounding
+# data loss to about a minute automatically — no per-batch scripting, no
+# app-side changes. This is what actually controls recovery granularity;
+# the nightly ScheduledBackup below only controls how much WAL has to be
+# replayed during a restore (faster restores), not how recent the
+# recoverable point is. If the app ever needs a guaranteed zero-lag
+# checkpoint right after a specific batch, it can call `SELECT
+# pg_switch_wal();` after commit to force that segment out immediately —
+# not required for the automatic behavior above, just an available option.
+#
 # Requires the CloudNativePG operator AND the Barman Cloud CNPG-I plugin
 # (`plugin-barman-cloud`) installed in the cluster — see the barmanObjectName
 # reference below and hetzner-postgres-backup-creds.yaml (Secret, created
@@ -26,9 +35,7 @@ kind: Cluster
 metadata:
   name: gami-postgres
 spec:
-  instances: 3
-  affinity:
-    topologyKey: kubernetes.io/hostname
+  instances: 1
   storage:
     storageClass: local-path
     size: 20Gi
@@ -44,6 +51,8 @@ spec:
   postgresql:
     pg_hba:
       - host gami gami 10.0.0.0/8 scram-sha-256
+    parameters:
+      archive_timeout: "60s"
   plugins:
     - name: barman-cloud.cloudnative-pg.io
       isWALArchiver: true

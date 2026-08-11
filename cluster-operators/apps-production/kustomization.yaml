@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Child Application manifests for production's App-of-Apps parent
+# (argocd/app-cluster-operators-production.yaml). sync-wave on an
+# Application resource only has an effect when some OTHER sync operation
+# places it into ordered waves — it's inert on a standalone, directly-applied
+# Application. Nesting these under one parent is what makes the wave 0
+# (cert-manager, cnpg, sealed-secrets) / wave 1 (cnpg-barman-plugin)
+# ordering actually enforced: the parent's sync operation waits for wave 0
+# to be Synced+Healthy before starting wave 1.
+resources:
+  - cert-manager.yaml
+  - cnpg.yaml
+  - cnpg-barman-plugin.yaml
+  - sealed-secrets.yaml

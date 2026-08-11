@@ -2,9 +2,11 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Deliberately no `namespace:` field — everything referenced here is
-# cluster-scoped (ClusterIssuer). Applied once via its own ArgoCD Application
-# (argocd/app-gami-cluster-wide.yaml), shared by both the staging and
-# production overlays (they reference these by name only, e.g.
-# `cert-manager.io/cluster-issuer: letsencrypt-production`).
+# cluster-scoped (ClusterIssuer). This same source is applied twice, once
+# per cluster — argocd/app-gami-cluster-wide-staging.yaml (local) and
+# argocd/app-gami-cluster-wide-production.yaml (destination.name: prod) —
+# since each cluster's own cert-manager instance needs its own
+# ClusterIssuers. Staging/production overlays reference these by name only
+# (e.g. `cert-manager.io/cluster-issuer: letsencrypt-production`).
 resources:
   - cert-manager/cluster-issuers.yaml

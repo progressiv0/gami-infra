@@ -1,0 +1,25 @@
+# App-of-Apps parent for staging's cluster: its "manifests" are the child
+# Application objects in cluster-operators/apps-staging/ (cert-manager,
+# cnpg, sealed-secrets — no Barman backup plugin, staging has no backup).
+# Nesting is required, not stylistic — argocd.argoproj.io/sync-wave on an
+# Application resource is only honored when some OTHER sync operation
+# places it into ordered waves; it's inert on a standalone, directly-applied
+# Application. Applied locally, since ArgoCD itself runs on staging.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster-operators-staging
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/progressiv0/gami-infra
+    targetRevision: main
+    path: cluster-operators/apps-staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

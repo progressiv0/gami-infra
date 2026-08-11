@@ -2,7 +2,7 @@
 
 Infrastructure-as-code for the Gami / Authentic Memory platform: Kubernetes
 manifests (Kustomize), GitOps delivery (ArgoCD), cluster bootstrap (Ansible),
-and VPS provisioning (Terraform). The application code itself lives in a
+and VPS networking (Terraform). The application code itself lives in a
 separate repo (`gami-app`) — this repo only describes how it's deployed and
 run.
 
@@ -10,11 +10,10 @@ This file explains what every piece is and how they fit together. For actual
 step-by-step deployment instructions, use the environment-specific guide:
 
 - **[README-local.md](README-local.md)** — run the whole stack on your own
-  machine/VMs for development or testing the infra itself. No cloud account
+  machine/VM for development or testing the infra itself. No cloud account
   needed.
-- **[README-dev.md](README-dev.md)** — deploy to the shared dev environment.
-- **[README-staging.md](README-staging.md)** — deploy to the shared staging
-  environment on the real 3-node Hetzner cluster.
+- **[README-staging.md](README-staging.md)** — deploy to the real staging
+  environment, and bootstrap the two-cluster setup for the first time.
 - **[README-production.md](README-production.md)** — deploy to production.
 
 Read this file first if you're new to the repo; jump to the guide that
@@ -27,28 +26,32 @@ matches what you're actually doing if you just need to get something running.
 Three layers, each owned by a different tool:
 
 ```
-Terraform   → creates VMs (Hetzner Cloud): network, firewall, 3 servers
-              (differently sized — see "Node topology" below)
-Ansible     → configures those VMs: installs k3s, joins them into one
-              cluster, labels each node with its home environment,
-              installs ArgoCD, does day-2 OS maintenance
-ArgoCD      → watches THIS repo and applies the Kubernetes manifests in
-              base/ + overlays/{dev,staging,production} — the actual app
-              (gami-webapp, Postgres) runs because ArgoCD put it there,
-              not because Ansible did
+Terraform   → attaches networking/firewalls to 2 pre-existing Hetzner VPS
+              nodes (staging, prod) — it never creates, resizes, or
+              destroys the servers themselves; see "Node topology" below
+Ansible     → configures those 2 nodes: installs k3s independently on
+              each (no joining — each node is its own single-node
+              cluster), installs the one central ArgoCD instance on
+              staging, and registers production with it as a remote
+              cluster, does day-2 OS maintenance
+ArgoCD      → runs only on staging, watches THIS repo, and applies the
+              Kubernetes manifests in base/ + overlays/{staging,production}
+              — locally onto staging, and remotely onto the registered
+              production cluster — the actual app (gami-webapp, Postgres)
+              runs because ArgoCD put it there, not because Ansible did
 ```
 
-Terraform and Ansible are how the *cluster* comes to exist. Everything under
+Terraform and Ansible are how the *clusters* come to exist. Everything under
 `base/`, `overlays/`, `cluster-wide/`, and `argocd/` is what ArgoCD
-continuously reconciles onto that cluster. You run Terraform/Ansible rarely
-(new node, cluster rebuild, OS patching); you change the Kustomize manifests
+continuously reconciles onto them. You run Terraform/Ansible rarely (new
+node, cluster rebuild, OS patching); you change the Kustomize manifests
 constantly (that's the actual day-to-day deploy path — commit, push, ArgoCD
 picks it up).
 
-For local development, Terraform is skipped entirely — you either already
-have machines (real or VMs) or you use one machine as a single-node
-stand-in — but Ansible and the ArgoCD/Kustomize layers work identically to
-production. See [README-local.md](README-local.md).
+For local development, Terraform is skipped entirely and there's only one
+machine — but Ansible and the ArgoCD/Kustomize layers work identically to
+staging (the local rig mirrors staging exactly, single node, nothing to
+register as remote). See [README-local.md](README-local.md).
 
 **No separate backend service.** `gami-app` dropped its old Go backend
 (`gami-api`) — confirmed against its actual `docker-compose.yml`, which only
@@ -63,74 +66,119 @@ design — see that file's own top-of-file notice.
 
 ## Node topology
 
-Three VPS nodes, **deliberately sized differently and each "home" to one
-environment**, rather than one uniform HA cluster running everything
-identically:
+**Two pre-existing Hetzner VPS nodes, both the same size (`cx22`), each its
+own fully independent, unjoined k3s cluster** — not one shared HA cluster.
+There used to be a third (dev) node in a shared 3-node cluster; dev is gone
+entirely now, and the remaining two nodes were split apart into separate
+single-node clusters:
 
-| Node | Size | `env` label | Normally runs |
+| Node | Public IP | `env` | Runs |
 |---|---|---|---|
-| `gami-node-dev` | small (`cx22`) | `dev` | ArgoCD (all its components), dev's `gami-webapp` (1 replica), dev's Postgres |
-| `gami-node-staging` | small (`cx22`) | `staging` | staging's `gami-webapp` (1 replica), staging's Postgres |
-| `gami-node-prod` | big (`cx42`) | `prod` | prod's Postgres primary; prod's `gami-webapp` spreads across **all 3** nodes, not just this one |
+| `gami-staging` | *(not committed — see below)* | `staging` | k3s (its own cluster), the **one central ArgoCD instance** (manages both clusters), staging's `gami-webapp` + CNPG Postgres + Mailpit |
+| `gami-prod` | *(not committed — see below)* | `prod` | k3s (its own cluster, completely separate from staging's), production's `gami-webapp` + CNPG Postgres — **no ArgoCD installed here** |
 
-All 3 nodes still run the k3s **server** role (embedded-etcd HA control
-plane — losing any single node still leaves a 2-of-3 quorum), regardless of
-which environment they're "home" to. What differs is **workload placement**,
-via Kubernetes node affinity — not 3 separate clusters. Terraform sets an
-`env` Hetzner Cloud label on each node (`terraform/variables.tf`'s `nodes`
-list); Ansible reads it back via the dynamic inventory
-(`ansible/inventory/hcloud.yml`'s `keyed_groups`) and applies it as a real
-Kubernetes node label at k3s install time (`--node-label env=...` in
-`roles/k3s-server/tasks/{cluster-init,join}.yml`).
+Real public IPs are deliberately kept out of this (public) repo —
+`ansible/inventory/production.yml` reads them from the `GAMI_STAGING_IP`/
+`GAMI_PROD_IP` environment variables at run time instead of hardcoding them.
+Same principle everywhere else a real credential would otherwise need to
+live in git (Hetzner API token, SSH key, ArgoCD's git repo access if this
+repo is private) — **`.env.example` at the repo root is the single list of
+every environment variable this repo's automation reads**, with a note on
+which tool consumes each one and which are optional.
 
-**Two different affinity strategies, deliberately**:
-- **dev and staging** use a *soft* `nodeAffinity` preference
-  (`preferredDuringSchedulingIgnoredDuringExecution`) toward their own node
-  — keeps them off the other nodes' resources normally, but doesn't leave
-  them stuck `Pending` forever if their home node is briefly unschedulable.
-  Per the design intent, dev/staging don't need to survive losing a node —
-  they're explicitly not meant to be highly reliable.
-- **production** uses `podAntiAffinity` on `gami-webapp` instead — "prefer
-  not to co-locate two `gami-webapp` pods on the same node." Combined with
-  `replicas: 3` (one per node), this actually spreads production across all
-  3 nodes, including the dev/staging nodes. That's what gives production
-  real redundancy: losing any single node — even the dedicated big one —
-  still leaves 2 of 3 replicas serving.
+**Neither node is created by Terraform.** Both already exist in Hetzner;
+`terraform/main.tf` uses `data "hcloud_server"` lookups by name (read-only)
+against them, never `resource "hcloud_server"`. Terraform can attach
+networking and firewall rules to these servers, but it can never create,
+resize, or destroy them. A `terraform plan` that proposes touching either
+server (rather than just the network/firewall resources around them) means
+something is misconfigured — stop and investigate before applying. Adding a
+third server later means adding an entry to `terraform/variables.tf`'s
+`nodes` list (just `{name, env}` now — no `server_type`, since there's no
+"differently sized" story anymore) and a matching host in
+`ansible/inventory/production.yml`.
 
-**Postgres is genuinely per-environment**, not one shared cluster — and,
-as of this repo's latest iteration, not one shared *technology* either:
-- `overlays/dev/postgres.yaml` and `overlays/staging/postgres.yaml` are
-  both **plain, unmanaged Postgres `Deployment`s** (official
-  `postgres:16-alpine` image + a PVC + a `Service` — no operator), pinned
-  to their own node, with **no backup configuration** — losing that pod
-  just means recreating it, which matches dev/staging not needing high
-  reliability. They dropped CloudNativePG entirely: since neither ever used
-  CNPG's HA/failover/declarative-backup features, the operator was pure
-  overhead. Both still expose the exact same `gami-postgres-app` Secret
-  contract (key `uri`) that `gami-webapp`/`gami-migrate` read via
-  `secretKeyRef` — those manifests don't know or care whether the Secret
-  was CNPG-generated or hand-sealed.
-- `overlays/production/database/postgres-cluster.yaml` is the only
-  environment still on **CloudNativePG**, with real HA (3 instances spread
-  across all 3 nodes via `topologyKey: kubernetes.io/hostname`) **and** S3
-  backup (nightly scheduled + on-demand, via the CNPG Barman Cloud plugin —
-  see `overlays/production/database/README-backup.md`). Node-loss tolerance
-  comes from CloudNativePG itself (streaming replication, automatic
-  failover) — each instance gets its own independent PV on its own node, so
-  there's no need for a replicated block-storage layer (e.g. Longhorn)
-  underneath as well; that would just be a second, redundant copy of the
-  same guarantee. Total loss of all instances is what the S3 backup is for.
+**Each node bootstraps its own single-node embedded-etcd k3s server,
+independently.** `ansible/playbooks/site.yml` runs `node_baseline` then the
+`k3s_server` role on every node — that role only ever does
+`k3s server --cluster-init`, nothing joins anything else. There's no etcd
+peer traffic, no Flannel VXLAN between the nodes, no shared private network
+for clustering purposes, and no two-phase "first node bootstraps, others
+join" logic (the old `roles/k3s_server/tasks/join.yml` is deleted).
 
-All three environments' Postgres PVCs use k3s's bundled `local-path`
-storage class regardless of which of the two technologies they run.
+**ArgoCD installs once, on staging, and manages production as a registered
+remote cluster** — ArgoCD's standard multi-cluster pattern, not a second
+ArgoCD install. Staging's Applications use `destination.server:
+https://kubernetes.default.svc` (unchanged — correct precisely because
+ArgoCD runs on staging); production's Applications use `destination.name:
+prod`. The registration itself is a Secret in the `argocd` namespace labeled
+`argocd.argoproj.io/secret-type: cluster`, containing production's k3s API
+URL, a bearer token, and a CA cert — created by
+`ansible/roles/argocd/tasks/register-remote-cluster.yml`, which:
+1. Creates an `argocd-manager` ServiceAccount + `cluster-admin`
+   ClusterRoleBinding on the **prod** node (delegated to over SSH from the
+   staging play).
+2. Requests and reads back its ServiceAccount token (k3s 1.24+ doesn't
+   auto-create one).
+3. Renders and applies the cluster-registration Secret
+   (`templates/cluster-secret.yaml.j2`) to **staging's** ArgoCD.
 
-**Production's database and webapp are deliberately two separate ArgoCD
-Applications** now (`overlays/production/database/` and
-`overlays/production/webapp/` — see the `argocd/` section below): the
-database is deployed today, ahead of the web app, since the app's own
-branches/images aren't ready yet. Bringing the webapp online later is just
-adding `production-webapp` to `argocd_gami_environments`
-(`ansible/roles/argocd/defaults/main.yml`) — no other change needed.
+Rationale for this shape (per the design intent): it keeps production's node
+"clean" — no ArgoCD control-plane pods competing with the app for resources
+on the box that's supposed to be running the real workload.
+
+**Networking**: there's no general shared private network between the two
+nodes anymore — nothing joins, so there's nothing that needs node-to-node
+connectivity by default. A small **dedicated** private network
+(`gami-argocd-link`, `10.10.0.0/24`, staging pinned to `10.10.0.2`, prod to
+`10.10.0.3`) exists solely so staging's ArgoCD can reach prod's k3s API
+(port 6443) to manage it remotely — prod's firewall only opens 6443 to that
+dedicated subnet, not generally. The old etcd (2379-2380) and Flannel VXLAN
+(8472/udp) firewall rules are gone (nothing joins). SSH (22) and the k3s API
+(6443) on the **public** interface are restricted to `admin_ip_cidr` (your
+own IP), not scoped to a shared private network the way they might be in a
+joined-cluster design — there's no such shared network to scope to.
+
+**CNPG (CloudNativePG) runs on both clusters now, always `instances: 1`** —
+never multi-instance/HA, since there's only one node per cluster and
+cross-node replication is structurally impossible. CNPG is adopted purely
+for its Barman Cloud backup/restore tooling, not for HA/failover:
+- **Staging** (`overlays/staging/postgres-cluster.yaml`): 25Gi `local-path`
+  storage, **no backup at all** — no `ObjectStore`/`ScheduledBackup`/Barman
+  plugin. A documented, deliberate tradeoff (staging doesn't need to survive
+  data loss the way production does), not an oversight. CNPG auto-generates
+  the `gami-postgres-app` Secret (key `uri`) — no hand-sealing needed for it
+  the way the old plain-Postgres Deployment required.
+- **Production** (`overlays/production/database/postgres-cluster.yaml`):
+  20Gi `local-path` storage, and backup is not just kept but improved. A
+  nightly `ScheduledBackup` (02:00) ships a base backup to S3 with 30-day
+  retention via the Barman Cloud plugin, **plus** `postgresql.parameters.
+  archive_timeout: "60s"` forces continuous WAL archiving on a timer
+  (instead of only when a 16MB segment fills), bounding data loss to about a
+  minute — true point-in-time recovery (PITR), not just "restore last
+  night's snapshot." This matters because the app's workload is
+  batch-driven; losing an in-flight batch is worse than losing a minute of
+  one. See `overlays/production/database/README-backup.md` for the full
+  detail and the restore-drill procedure.
+
+All Postgres PVCs on both clusters use k3s's bundled `local-path` storage
+class — there's no second node on either cluster for a replicated
+block-storage layer (e.g. Longhorn) to spread across, so it would buy
+nothing.
+
+**Production's database and webapp are still two separate ArgoCD
+Applications** (`overlays/production/database/` and
+`overlays/production/webapp/`): the database is deployed today, ahead of the
+web app, since the app's own branches/images aren't ready yet. Bringing the
+webapp online later is just adding `app-gami-production-webapp.yaml` to
+`argocd_remote_apps` (`ansible/roles/argocd/defaults/main.yml`) — no other
+change needed. Production's `gami-webapp` no longer has any node-loss HA
+story either way: `overlays/production/webapp/kustomization.yaml` no longer
+overrides `replicas` (uses `base/`'s own default of 1, down from 3) and its
+`podAntiAffinity` patch is gone — there's only one node in production's
+cluster, nothing to spread pods across. A pod crash still gets Kubernetes'
+normal restart; it just doesn't survive losing the node, because there's no
+second node to fail over to.
 
 ---
 
@@ -138,67 +186,61 @@ adding `production-webapp` to `argocd_gami_environments`
 
 ```
 gami-infra/
-├── terraform/          VPS provisioning (Hetzner Cloud) — staging/production/dev's real nodes only
-├── ansible/             Cluster bootstrap + day-2 ops (all environments)
+├── terraform/          Networking/firewall attachment for 2 pre-existing Hetzner nodes
+├── ansible/             Cluster bootstrap + day-2 ops (both nodes, independently)
 ├── base/                 Kustomize base: the app's actual Kubernetes resources
 ├── overlays/
-│   ├── dev/               Per-environment Kustomize overlay + secrets + plain Postgres
-│   ├── staging/           Per-environment Kustomize overlay + secrets + plain Postgres
+│   ├── staging/           Full Kustomize overlay + secrets + CNPG Postgres (no backup) + Mailpit
 │   └── production/
-│       ├── database/       CNPG Postgres + S3 backup — own ArgoCD Application, deployed now
+│       ├── database/       CNPG Postgres + S3 backup + PITR — own ArgoCD Application, deployed now
 │       └── webapp/          gami-webapp/gami-migrate — own ArgoCD Application, deployed later
-├── cluster-wide/         Cluster-scoped resources shared by every environment
+├── cluster-wide/         Cluster-scoped resources, synced independently onto EACH cluster
 ├── cluster-operators/    Third-party operators (cert-manager, CNPG, Sealed Secrets, backup plugin) — GitOps-managed, not manual
-│   └── apps/               Child ArgoCD Applications for the operators (App-of-Apps pattern)
-├── argocd/               ArgoCD Application definitions (what ArgoCD watches)
+│   ├── apps-staging/       Child ArgoCD Applications installing the operators onto staging
+│   └── apps-production/    Same, onto production (via the registered remote cluster) — plus the Barman plugin
+├── argocd/               ArgoCD Application definitions (what ArgoCD watches, and where)
 └── .claude/plans/        Design doc this repo was built from (historical record — see its own superseded-notice)
 ```
 
-### `terraform/` — VPS provisioning
+### `terraform/` — VPS networking
 
-Provisions the Hetzner Cloud infrastructure: a private network, a firewall,
-and 3 VPS nodes — `gami-node-dev`, `gami-node-staging`, `gami-node-prod` —
-each with its own size and an `env` label (see "Node topology" above), plus
-`role=k3s-server` on all 3 so Ansible's dynamic inventory can find them
-without a hand-maintained IP list.
+Attaches networking and firewall rules to the 2 already-provisioned Hetzner
+servers (`gami-staging`, `gami-prod`) — never provisions the servers
+themselves.
 
 | File | Purpose |
 |---|---|
-| `main.tf` | The actual resources: `hcloud_ssh_key`, `hcloud_network` (+ subnet), `hcloud_firewall`, `hcloud_server` (one per entry in `var.nodes`, via `for_each` — not a uniform `count`) |
-| `variables.tf` | Inputs: `hcloud_token` (secret), `admin_ip_cidr` (your IP, for SSH/k3s-API firewall rules), `ssh_public_key`, `location`, and `nodes` — the list of `{name, server_type, env}` objects that drives the differently-sized, differently-labeled nodes |
-| `outputs.tf` | Node public/private IPs, names, and `env` labels, all keyed by node name — feeds Ansible |
-| `backend.tf` | Remote state on Hetzner Object Storage (S3-compatible) — not a local `.tfstate` file, so CI runners see consistent state |
+| `main.tf` | `data "hcloud_server"` lookups (by name) for both nodes — read-only, never `resource`. Then: `hcloud_network`/`hcloud_network_subnet` for the dedicated `gami-argocd-link` network, `hcloud_server_network` pinning each node's address on it (staging `10.10.0.2`, prod `10.10.0.3`), the main `hcloud_firewall` (22/6443 admin-IP-only, 80/443 public), and a second `hcloud_firewall` scoped to the `argocd-link` subnet, attached only to prod, opening 6443 to it |
+| `variables.tf` | Inputs: `hcloud_token` (secret), `admin_ip_cidr` (your IP, for SSH/k3s-API firewall rules), `location`, and `nodes` — a list of `{name, env}` objects, one per pre-existing server this repo manages networking for. This is the "add a server" list — add an entry here (name must exactly match the real Hetzner server name) plus a matching host in `ansible/inventory/production.yml` |
+| `outputs.tf` | `node_public_ips`, `node_argocd_link_ips` (the dedicated-network addresses — prod's feeds Ansible's remote-cluster registration), `node_names`, `node_envs` |
+| `backend.tf` | Remote state on Hetzner Object Storage (S3-compatible) — not a local `.tfstate` file, so CI runners see consistent state. Same bucket production's Postgres backups use, under a separate key prefix |
 | `versions.tf` | Provider pin (`hetznercloud/hcloud ~> 1.45`), Terraform `>= 1.7` |
 | `README.md` | Terraform-specific notes; flags that this HCL hasn't been run through `terraform validate`/`plan` yet — review before trusting it against real infra |
 
-Firewall rules (`main.tf`): SSH (22) and the k3s API (6443) are restricted to
-`admin_ip_cidr`/the private network — never `0.0.0.0/0`. HTTP/HTTPS (80/443)
-are public (that's Traefik ingress). etcd (2379-2380) and Flannel VXLAN
-(8472/udp) are private-network-only, node-to-node traffic.
+Firewall rules: SSH (22) and the k3s API (6443) on the public interface are
+restricted to `admin_ip_cidr` — never `0.0.0.0/0`. HTTP/HTTPS (80/443) are
+public (that's Traefik ingress). There are **no** etcd or Flannel VXLAN
+rules anymore — nothing joins, so there's no node-to-node cluster traffic to
+permit. The one deliberate hole between the two nodes is 6443 on the
+dedicated `gami-argocd-link` subnet, open only to prod, only for staging's
+ArgoCD to reach it.
 
-**Only used for the real 3-node cluster.** Local development doesn't run
-Terraform at all — see [README-local.md](README-local.md).
+**Only used for the real 2-node infrastructure.** Local development doesn't
+run Terraform at all — see [README-local.md](README-local.md).
 
 ### `ansible/` — cluster bootstrap & maintenance
 
 | Path | Purpose |
 |---|---|
-| `inventory/hcloud.yml` | **The real cluster.** Dynamic inventory sourced live from the Hetzner API via the `role=k3s-server` label Terraform sets — no IP list to maintain. Also defines `keyed_groups` on each node's `env` label (`hcloud_labels.env`), which `k3s-server`'s install tasks read to set the matching Kubernetes node label |
+| `inventory/production.yml` | **The real infrastructure.** Static, hand-maintained YAML — not the dynamic hcloud plugin this repo used to use, since Terraform no longer owns these servers via the API and can't label them for dynamic discovery anymore. Declares `gami-staging`/`gami-prod` with their public IPs and `hcloud_labels.env` directly, plus `env_staging`/`env_prod` groups (which `site.yml` uses to target ArgoCD install/registration at staging specifically) and prod's `argocd_link_ip` |
 | `inventory/local.yml` | Single-machine local inventory (`ansible_connection: local`) |
-| `inventory/alpine-local.yml` | Multi-VM local inventory for a 3-node Alpine test rig (static IPs, real SSH) |
-| `playbooks/site.yml` | **The real bootstrap entrypoint** for staging/production: node baseline → first node does `k3s --cluster-init` → remaining nodes join. Idempotent, safe to re-run (how new nodes get added or drift gets reconciled) |
-| `playbooks/local.yml` | Single-machine equivalent of `site.yml`, for `inventory/local.yml` |
-| `playbooks/alpine-local.yml` | Multi-VM equivalent of `site.yml`, for `inventory/alpine-local.yml` — skips `node-baseline` (that role is apt/ufw-specific, written for the real Debian/Ubuntu production nodes, not a throwaway test rig) |
-| `playbooks/patch-os.yml` | Day-2: rolling OS patch + reboot, one node at a time (`serial: 1`) — drains before rebooting so etcd quorum survives |
-| `playbooks/cleanup-logs.yml` | Day-2: journald vacuum, containerd image prune, old pod log cleanup. Runs identically by hand or via a future ops-page GitHub Actions dispatch |
-| `roles/node-baseline/` | OS hardening: unattended-upgrades, non-root `ops` user, ufw firewall mirroring Terraform's Hetzner firewall (defense in depth) |
-| `roles/k3s-server/` | Installs k3s. `tasks/cluster-init.yml` bootstraps the first node with embedded etcd (`--cluster-init`); `tasks/join.yml` joins the rest. Both pass `--node-label env=<dev\|staging\|prod>` (read from the node's Hetzner label via `hostvars[...].hcloud_labels.env`) so Kubernetes scheduling (nodeAffinity/podAntiAffinity in the overlays) has something to match on. All 3 nodes run the **server** role (not agent) — that's what gives you an HA, odd-quorum embedded-etcd control plane; losing any one node still leaves 2/3 up |
-| `roles/argocd/` | Installs ArgoCD itself (see below) |
-
-**Why all 3 nodes are k3s servers, not 1 server + 2 agents**: etcd needs an
-odd number of members to keep quorum after losing one. 3 servers means
-losing any single node still leaves 2 — a working majority. This is a
-deliberate HA design choice, not an oversight.
+| `playbooks/site.yml` | **The real bootstrap entrypoint.** `node_baseline` on both nodes → `k3s_server` (single-node `--cluster-init`) independently on both nodes → install ArgoCD on staging only → register production as a remote cluster in staging's ArgoCD. Idempotent, safe to re-run (how a new node gets added or drift gets reconciled) |
+| `playbooks/local.yml` | Single-machine equivalent, mirroring staging (see [README-local.md](README-local.md)) |
+| `playbooks/patch-os.yml` | Day-2: rolling OS patch + reboot, one node at a time (`serial: 1`, kept as a light habit — not for any quorum reason, since there's no shared quorum anymore). No longer drains/uncordons before rebooting — that used to delegate to "some other node in the shared cluster," which doesn't exist; each node is its own single-node cluster with nowhere to evacuate to |
+| `playbooks/cleanup-logs.yml` | Day-2: journald vacuum, containerd image prune, old pod log cleanup |
+| `roles/node_baseline/` | OS hardening: unattended-upgrades, non-root `ops` user, ufw firewall mirroring Terraform's Hetzner firewall (defense in depth) |
+| `roles/k3s_server/` | Installs k3s. `tasks/cluster-init.yml` is the **only** task file now — every node runs `--cluster-init` independently; there's no `join.yml` anymore (deleted along with the joined-cluster design) |
+| `roles/argocd/` | Installs ArgoCD on staging, applies its local Application manifests, and (via `tasks/register-remote-cluster.yml`) registers production as a remote cluster (see below) |
 
 The `argocd` role does more than run `kubectl apply` on ArgoCD's install
 manifest:
@@ -206,7 +248,8 @@ manifest:
 - Applies with `--server-side --force-conflicts` (client-side apply chokes on
   the `applicationsets.argoproj.io` CRD — its schema exceeds Kubernetes'
   262144-byte last-applied-configuration annotation limit)
-- Applies this repo's own `argocd/*.yaml` Application manifests
+- Applies `argocd_local_apps` — the Application manifests that run against
+  staging itself (see `defaults/main.yml` below)
 - Adds a **dedicated Traefik entrypoint** for the ArgoCD UI (`files/traefik-argocd-entrypoint.yaml`,
   a k3s `HelmChartConfig` — the supported way to customize k3s's bundled
   Traefik chart without the helm-controller overwriting direct edits) on a
@@ -221,13 +264,29 @@ manifest:
   `Ingress` — needed to bind to that dedicated entrypoint) routing to
   `argocd-server` over plain HTTP, with `tls: {}` so Traefik terminates TLS
   for the browser
-- Patches every ArgoCD workload (`argocd-server`, `argocd-repo-server`,
-  `argocd-applicationset-controller`, `argocd-dex-server`,
-  `argocd-notifications-controller`, `argocd-application-controller`) with a
-  soft `nodeAffinity` preference toward the `env=dev` node — ArgoCD is
-  cluster-wide infra, not an environment itself, but it has to live
-  somewhere, and the dev node is the small box it's sized to fit on (see
-  "Node topology" above)
+- Patches `argocd-cm` with a custom Ingress health check (see the Gotchas
+  section of [README-local.md](README-local.md))
+- Then, as a separate play in `site.yml` (`tasks_from:
+  register-remote-cluster.yml`), wires up production as a registered remote
+  cluster — creates the `argocd-manager` ServiceAccount/ClusterRoleBinding
+  on prod, reads its token and CA cert, and applies the resulting
+  cluster-registration Secret to staging's ArgoCD, then applies
+  `argocd_remote_apps` against it
+
+`ansible/roles/argocd/defaults/main.yml` replaces the old single
+`argocd_gami_environments` list with two:
+- **`argocd_local_apps`** — applied against staging locally:
+  `app-cluster-operators-staging.yaml`, `app-gami-cluster-wide-staging.yaml`,
+  `app-gami-staging.yaml`.
+- **`argocd_remote_apps`** — applied against the registered prod cluster:
+  `app-cluster-operators-production.yaml`, `app-gami-cluster-wide-production.yaml`,
+  `app-gami-production-database.yaml` — deliberately **not**
+  `app-gami-production-webapp.yaml` yet, same "add it once the app is ready"
+  deferred-activation pattern as before.
+
+Local playbooks (`playbooks/local.yml`) override `argocd_local_apps` to the
+same staging-mirroring file set and set `argocd_remote_apps: []` — a local
+rig is single-cluster, there's nothing to register.
 
 ### `base/` — the application's Kubernetes manifests
 
@@ -236,33 +295,35 @@ Both overlays start here and layer environment-specific values on top.
 
 | File | Purpose |
 |---|---|
-| `gami-webapp/deployment.yaml` | `gami-webapp` Deployment — the whole app (no separate backend service, see the note above). Distroless (`gcr.io/distroless/nodejs22-debian13`), non-root (uid 65532), `readOnlyRootFilesystem`. `/api/public/health` liveness+readiness (pings Postgres — a real readiness signal, not a bare 200). Base default is `replicas: 1`; each overlay sets its own count (see the overlay table below) |
+| `gami-webapp/deployment.yaml` | `gami-webapp` Deployment — the whole app (no separate backend service, see the note above). Distroless (`gcr.io/distroless/nodejs22-debian13`), non-root (uid 65532), `readOnlyRootFilesystem`. `/api/public/health` liveness+readiness (pings Postgres — a real readiness signal, not a bare 200). Default `replicas: 1` — staging explicitly sets 1 too; production no longer overrides it at all (used to be 3 with podAntiAffinity, see "Node topology" above) |
 | `gami-webapp/service.yaml` | ClusterIP |
 | `gami-webapp/ingress.yaml` | Traefik `Ingress`, two `Host` rules (`app.<domain>`, `verify.<domain>`) both routing to the same Service — the portal/verifier split happens in the app's own `src/middleware.ts`, not at the ingress layer |
 | `gami-migrate-job.yaml` | A `batch/v1` Job — runs `npm run db:setup` against the `-migrate` image tag (the builder stage, which still has npm/drizzle-kit/tsx; the distroless runtime image doesn't). Ordered via `argocd.argoproj.io/sync-wave` (`-1`: `gami-config` → `0`: this Job → `1`: `gami-webapp`'s Deployment, patched per overlay), **not** a PreSync hook — an earlier PreSync-hook version of this Job could never see `gami-config` (hooks run in a phase that completes entirely before any Sync-phase resource, including that ConfigMap, is even attempted). `argocd.argoproj.io/sync-options: Replace=true` on the Job makes repeated syncs of this fixed name idempotent (Jobs are immutable, so plain re-apply fails once one has run) |
-| `kustomization.yaml` | Ties the above together under `namespace: gami` (overridden per-overlay). Deliberately has **no** `configMapGenerator`, SealedSecrets, cert-manager, or Postgres resources — those are genuinely per-environment, added by each overlay (Postgres specifically: see "Node topology" above for why it's not one shared `base/postgres-cluster.yaml` anymore) |
+| `kustomization.yaml` | Ties the above together under `namespace: gami` (overridden per-overlay). Deliberately has **no** `configMapGenerator`, SealedSecrets, cert-manager, or Postgres resources — those are genuinely per-environment, added by each overlay |
 | `README-image-pull-secret.md` | Explains why there's no `ghcr-pull-secret` manifest here: a real registry credential shouldn't be committed even sealed. Created once per cluster with a plain `kubectl create secret docker-registry` command instead |
 
-### `overlays/{dev,staging,production}/` — per-environment configuration
+### `overlays/{staging,production}/` — per-environment configuration
 
-Dev and staging are each a full Kustomize `Kustomization` referencing
-`../../base` plus their own `sealed-secrets/` and their own `postgres.yaml`
-(a plain Postgres Deployment — see "Node topology" above). Production is
-split into two sibling Kustomizations/ArgoCD Applications instead —
-`database/` (CNPG `Cluster` + S3 backup) and `webapp/` (`../../base` +
-`sealed-secrets/`) — so the database can deploy independently of the web
-app. What differs between the three environments:
+Staging is a full Kustomize `Kustomization` referencing `../../base` plus
+its own `sealed-secrets/`, `postgres-cluster.yaml` (CNPG, `instances: 1`, no
+backup), and `mailpit.yaml`. Production is split into two sibling
+Kustomizations/ArgoCD Applications instead — `database/` (CNPG `Cluster` +
+S3 backup + PITR) and `webapp/` (`../../base` + `sealed-secrets/`) — so the
+database can deploy independently of the web app. What differs between the
+two:
 
-| | dev | staging | production |
-|---|---|---|---|
-| Namespace | `gami-dev` | `gami-staging` | `gami` |
-| Hostnames | `dev.authenticmemory.org`, `verify-dev.authenticmemory.org` | `staging.authenticmemory.org`, `verify-staging.authenticmemory.org` | `app.authenticmemory.org`, `verify.authenticmemory.org` |
-| TLS issuer | `letsencrypt-staging` (untrusted test certs) | `letsencrypt-staging` (untrusted test certs) | `letsencrypt-production` (real, browser-trusted certs) |
-| `gami-webapp` replicas | 1, soft nodeAffinity toward `env=dev` | 1, soft nodeAffinity toward `env=staging` | 3, podAntiAffinity spreads across all 3 nodes (`webapp/` Application — not yet enabled, see below) |
-| Postgres | plain `postgres:16-alpine` Deployment, pinned to the dev node, no backup | plain `postgres:16-alpine` Deployment, pinned to the staging node, no backup | CNPG, 3 instances (HA) spread across all 3 nodes, nightly + on-demand S3 backup (`database/` Application — deployed now) |
-| Secrets | `overlays/dev/sealed-secrets/` — independently generated | `overlays/staging/sealed-secrets/` — independently generated | `overlays/production/webapp/sealed-secrets/` — independently generated, never shared |
+| | staging | production |
+|---|---|---|
+| Namespace | `gami-staging` | `gami` |
+| Cluster | `gami-staging` node, ArgoCD's local destination | `gami-prod` node, ArgoCD's registered remote `prod` destination |
+| Hostnames | `staging.authenticmemory.org`, `verify-staging.authenticmemory.org` | `app.authenticmemory.org`, `verify.authenticmemory.org` |
+| TLS issuer | `letsencrypt-staging` (untrusted test certs) | `letsencrypt-production` (real, browser-trusted certs) |
+| `gami-webapp` replicas | 1 (no nodeAffinity/podAntiAffinity — one node, nothing to schedule around) | 1 (base's own default — no override, no podAntiAffinity; there's only one node, no node-loss HA story anymore) |
+| Postgres | CNPG, 1 instance, **no backup** (documented tradeoff) | CNPG, 1 instance, nightly S3 backup + `archive_timeout: 60s` PITR (`database/` Application — deployed now) |
+| SMTP | Mailpit (`mailpit.yaml`), no real credentials needed | Real SMTP credentials, sealed |
+| Secrets | `overlays/staging/sealed-secrets/` — just `gami-secrets.yaml` (`NEXTAUTH_SECRET`); no `gami-postgres-app` (CNPG auto-generates it), no `gami-smtp` (Mailpit) | `overlays/production/webapp/sealed-secrets/` — `gami-secrets.yaml` + `gami-smtp.yaml`, independently generated, never shared with staging |
 
-All three share `generatorOptions.disableNameSuffixHash: true` — without it,
+Both share `generatorOptions.disableNameSuffixHash: true` — without it,
 Kustomize's default hash-suffixed ConfigMap name breaks every
 `envFrom.configMapRef` in the Deployment/Job, which 404s at apply time (this
 was verified against a real `kubectl kustomize` render, not assumed). The
@@ -272,7 +333,11 @@ a pod-template annotation manually when that matters.
 `sealed-secrets/` starts as an **empty** `resources: []` Kustomization in
 git — it's populated the first time an operator runs the secrets bootstrap
 runbook (see each environment's README "Secrets" section) and never holds
-plaintext.
+plaintext. Because staging and production each run their own independent
+Sealed Secrets controller with its own keypair now (see `cluster-operators/`
+below), a SealedSecret sealed against one cluster's controller is
+permanently undecryptable against the other's — there's no cross-cluster
+reuse possible even by accident.
 
 ### `cluster-wide/` — resources shared by every environment
 
@@ -281,134 +346,117 @@ resources (`letsencrypt-staging`, `letsencrypt-production`). These are
 **cluster-scoped** Kubernetes resources, which is why they live outside
 `base/`: `base/kustomization.yaml` sets a `namespace:`, and Kustomize's
 namespace transformer would incorrectly stamp that onto a `ClusterIssuer`
-(verified against a real render) — worse, both overlays would then fight to
-own the same cluster-scoped resource name. `cluster-wide/kustomization.yaml`
-deliberately has no `namespace:` field and is synced once, independently, via
-its own ArgoCD Application.
+(verified against a real render). `cluster-wide/kustomization.yaml`
+deliberately has no `namespace:` field. Since staging and production are now
+two fully separate clusters, each needs its own cert-manager +
+`ClusterIssuer`s independently — that's why `argocd/` applies this same
+source path twice, once per cluster (`app-gami-cluster-wide-staging.yaml`
+locally, `app-gami-cluster-wide-production.yaml` against the registered
+remote), rather than once for a single shared cluster the way it used to.
 
 ### `cluster-operators/` — third-party operators, GitOps-managed
 
 Third-party Kubernetes operators the app manifests depend on — cert-manager
 (for `ClusterIssuer`/`Certificate`), the CloudNativePG operator (for the
-`Cluster` CRD `overlays/production/database/postgres-cluster.yaml` uses —
-the *only* environment still on CNPG, see "Node topology" above), the CNPG
-Barman Cloud plugin (production's S3 backup — see
+`Cluster` CRD both `overlays/staging/postgres-cluster.yaml` and
+`overlays/production/database/postgres-cluster.yaml` use), the CNPG Barman
+Cloud plugin (production's S3 backup only — see
 `overlays/production/database/README-backup.md`), and the Sealed Secrets
 controller (decrypts each overlay's `sealed-secrets/*.yaml` into real
-`Secret`s). Every environment's Postgres PVC (CNPG-managed for production,
-plain `PersistentVolumeClaim` for dev/staging) uses k3s's own bundled
-`local-path` storage class — no separate storage operator needed, since
-CNPG's own multi-instance streaming replication (plus S3 backup) already
-covers production's node-loss and disaster recovery without a replicated
-block-storage layer underneath (see "Node topology" above for the fuller
-reasoning).
+`Secret`s). Every Postgres PVC on both clusters uses k3s's own bundled
+`local-path` storage class — no separate storage operator needed.
 
 **These are installed the same way as everything else in this repo: as
 ArgoCD `Application`s, not as a manual `kubectl apply` step or a separate
 Ansible role.** Each subdirectory under `cluster-operators/` (not counting
-`apps/`, see below) is a Kustomization referencing the operator's official
-release manifest directly, pinned to an exact version — bumping the version
-is a one-line URL change in git, reviewable as a normal diff, rather than an
-unaudited `kubectl apply` against whatever `/latest/` happens to resolve to
-at install time:
+`apps-staging/`/`apps-production/`, see below) is a Kustomization
+referencing the operator's official release manifest directly, pinned to an
+exact version — bumping the version is a one-line URL change in git,
+reviewable as a normal diff. **These leaf directories are unchanged and
+shared by both clusters** — only the layer above them (which Application
+manifests point at which cluster) forked when staging and production split
+apart:
 
 | Path | Installs |
 |---|---|
 | `cert-manager/kustomization.yaml` | cert-manager v1.21.0 |
 | `cnpg/kustomization.yaml` | CloudNativePG operator v1.30.0. **Needs `ServerSideApply=true`** in the Application's `syncOptions` — its `clusters.postgresql.cnpg.io`/`poolers.postgresql.cnpg.io` CRDs exceed Kubernetes' 262144-byte last-applied-configuration annotation limit for client-side apply (confirmed by hand: plain `kubectl apply` fails with `metadata.annotations: Too long`) |
-| `cnpg-barman-plugin/kustomization.yaml` | Barman Cloud CNPG-I plugin v0.13.0 — only needed for production's backups; depends on both cert-manager (its own mTLS cert/issuer) and the CNPG operator's CRDs already existing |
-| `sealed-secrets/kustomization.yaml` | Bitnami Sealed Secrets controller v0.38.4. **Lands in `kube-system`, not its own namespace** — the upstream `controller.yaml` hardcodes that namespace on every resource it defines, so the Application's `destination.namespace` has no effect here. `kubeseal --fetch-cert` needs `--controller-namespace kube-system --controller-name sealed-secrets-controller` (the full name, not the shorter `sealed-secrets` some docs assume) to match |
-| `apps/` | The 4 child ArgoCD `Application` manifests that actually install the above (see below) |
+| `cnpg-barman-plugin/kustomization.yaml` | Barman Cloud CNPG-I plugin v0.13.0 — only referenced by `apps-production/`, since staging has no backup; depends on both cert-manager (its own mTLS cert/issuer) and the CNPG operator's CRDs already existing |
+| `sealed-secrets/kustomization.yaml` | Bitnami Sealed Secrets controller v0.38.4. **Lands in `kube-system`, not its own namespace** — the upstream `controller.yaml` hardcodes that namespace on every resource it defines, so the Application's `destination.namespace` has no effect here. `kubeseal --fetch-cert` needs `--controller-namespace kube-system --controller-name sealed-secrets-controller` (the full name, not the shorter `sealed-secrets` some docs assume) to match. Staging's and production's installs are two fully separate controllers with two separate keypairs |
+| `apps-staging/` | Child ArgoCD `Application` manifests installing cert-manager, CNPG, and Sealed Secrets onto **staging** — no Barman plugin, staging has no backup |
+| `apps-production/` | Same three, plus the Barman plugin, installed onto **production** via the registered remote cluster |
 
-**Ordering, and why it's an App-of-Apps, not 4 flat Applications**:
-cert-manager, the CNPG operator, and Sealed Secrets have no
-dependency on each other, but the Barman plugin needs both cert-manager
-*and* CNPG already up (it issues its own mTLS cert via cert-manager and
-registers with the CNPG operator during install). `argocd.argoproj.io/sync-wave`
-is the mechanism for that — **but it's only honored when a sync operation
-is placing a resource into ordered waves. On a standalone, directly-applied
+**Ordering, and why each is an App-of-Apps, not flat Applications**:
+cert-manager, the CNPG operator, and Sealed Secrets have no dependency on
+each other, but production's Barman plugin needs both cert-manager *and*
+CNPG already up (it issues its own mTLS cert via cert-manager and registers
+with the CNPG operator during install). `argocd.argoproj.io/sync-wave` is
+the mechanism for that — **but it's only honored when a sync operation is
+placing a resource into ordered waves. On a standalone, directly-applied
 Application, the annotation is inert** (verified against ArgoCD's own docs
-and maintainer guidance — this genuinely doesn't work as flat top-level
-Applications, it silently no-ops). The fix is nesting:
-`argocd/app-cluster-operators.yaml` is a parent Application whose
-"manifests" are the 4 child Applications in `cluster-operators/apps/`
-(`cert-manager.yaml`, `cnpg.yaml`, `sealed-secrets.yaml`
-at wave `"0"`; `cnpg-barman-plugin.yaml` at wave `"1"`). It's the
+and maintainer guidance). The fix is nesting: `argocd/app-cluster-operators-staging.yaml`
+and `app-cluster-operators-production.yaml` are each a parent Application
+whose "manifests" are the child Applications in `cluster-operators/apps-staging/`
+and `apps-production/` respectively (cert-manager/cnpg/sealed-secrets at
+wave `"0"`; production's `cnpg-barman-plugin` at wave `"1"`). It's the
 **parent's own sync operation** that enforces "wave 0 fully Synced+Healthy
-before wave 1 starts" — that guarantee holds during the parent's syncs
-(bootstrap, or any drift-triggered re-sync of the parent itself), not as a
-standing invariant if the children auto-sync independently afterward,
-which is fine for a one-time operator bootstrap like this.
+before wave 1 starts."
 
 **A second, unrelated ArgoCD gotcha hit while building this**: ArgoCD
 caches rendered manifests in its Redis instance (`argocd-redis`), keyed
 independently of the repo-server *process* — restarting `argocd-repo-server`
-does **not** reliably bust this cache. A stale cache here manifested as
-genuinely confusing behavior: edited manifests (verified correct via
-`kubectl kustomize` locally) kept being ignored by the live sync — ArgoCD's
-own task list showed an annotation that had been removed from git days
-earlier. Fix: `kubectl exec -n argocd <redis-pod> -- redis-cli -a
-<password-from-argocd-redis-secret> FLUSHALL`. Worth trying this before
-assuming a sync-wave/hook annotation "isn't being honored" for some deeper
-reason — it may just be stale cache.
+does **not** reliably bust this cache. Fix: `kubectl exec -n argocd
+<redis-pod> -- redis-cli -a <password-from-argocd-redis-secret> FLUSHALL`.
+Worth trying this before assuming a sync-wave/hook annotation "isn't being
+honored" for some deeper reason — it may just be stale cache.
 
 **Why this replaced a manual step**: earlier, these operators were
 documented (in `.claude/plans/infrastructure-cicd-plan.md`'s Rollout Order)
 as something a human installs by hand, once, outside of Ansible or ArgoCD.
-That's what caused a real incident on this repo's own test cluster — ArgoCD
-tried to sync `overlays/staging`/`overlays/production` (which reference the
-`Cluster` CRD) and `cluster-wide` (which references `ClusterIssuer`) before
-anyone had actually run that manual step, so both failed with `SyncFailed:
-... CRD is installed on the destination cluster`. Moving the install itself
-into GitOps means it's no longer possible to forget: it happens
-automatically the same way the app's own Kustomize manifests do, and
-`selfHeal: true` means it can't be accidentally uninstalled either.
+Moving the install itself into GitOps means it's no longer possible to
+forget: it happens automatically the same way the app's own Kustomize
+manifests do, and `selfHeal: true` means it can't be accidentally
+uninstalled either.
 
 ### `argocd/` — what ArgoCD watches
 
-Six top-level `Application` manifests (one of which, `app-cluster-operators.yaml`,
-is a parent whose own "resources" are 4 more child Applications defined under
-`cluster-operators/apps/` — see above), applied during cluster bootstrap by
-the `argocd` Ansible role and then self-managing from there
-(`syncPolicy.automated` with `prune: true, selfHeal: true` — ArgoCD both
-applies new commits and reverts manual cluster drift).
+Seven `Application` manifests, split by which cluster each targets — two of
+them (`app-cluster-operators-*`) are parents whose own "resources" are more
+child Applications defined under `cluster-operators/apps-{staging,production}/`
+(see above). Applied during cluster bootstrap by the `argocd` Ansible role
+— the local-destination ones directly, the `prod`-destination ones via
+`register-remote-cluster.yml` once production is registered — and then
+self-managing from there (`syncPolicy.automated` with `prune: true,
+selfHeal: true` — ArgoCD both applies new commits and reverts manual cluster
+drift).
 
-**Not every file here gets applied automatically** — `app-cluster-operators.yaml`
-and `app-gami-cluster-wide.yaml` always do (they're cluster-wide, not
-per-environment), but the rest are gated by
-`ansible/roles/argocd/defaults/main.yml`'s `argocd_gami_environments` list,
-which the `argocd` role loops over to `kubectl apply -f app-gami-<item>.yaml`
-for each entry. The real hcloud cluster's default is `[staging,
-production-database]` — notably **not** `production-webapp`, which exists
-as a file but is deliberately left out until the web app itself is ready to
-deploy (bring it online later by just adding `production-webapp` to that
-list). Local playbooks override the list to `[dev]` only.
-
-| File | Watches path | Destination namespace | In default `argocd_gami_environments`? |
+| File | Watches path | Destination | In `argocd_local_apps`/`argocd_remote_apps`? |
 |---|---|---|---|
-| `app-cluster-operators.yaml` | `cluster-operators/apps` (renders the 4 child Applications below) | `argocd` | always applied |
-| `app-gami-cluster-wide.yaml` | `cluster-wide` | `default` (irrelevant for cluster-scoped resources, required by the schema) | always applied |
-| `app-gami-dev.yaml` | `overlays/dev` | `gami-dev` | only via local playbooks' override |
-| `app-gami-staging.yaml` | `overlays/staging` | `gami-staging` | yes |
-| `app-gami-production-database.yaml` | `overlays/production/database` | `gami` | yes |
-| `app-gami-production-webapp.yaml` | `overlays/production/webapp` | `gami` | **not yet** — add when the app is ready |
+| `app-cluster-operators-staging.yaml` | `cluster-operators/apps-staging` | local (`https://kubernetes.default.svc`) | always, local |
+| `app-cluster-operators-production.yaml` | `cluster-operators/apps-production` | `name: prod` | always, remote |
+| `app-gami-cluster-wide-staging.yaml` | `cluster-wide` | local | always, local |
+| `app-gami-cluster-wide-production.yaml` | `cluster-wide` | `name: prod` | always, remote |
+| `app-gami-staging.yaml` | `overlays/staging` | local (unchanged from before the split — correct precisely because ArgoCD now runs on staging) | local |
+| `app-gami-production-database.yaml` | `overlays/production/database` | `name: prod` | remote |
+| `app-gami-production-webapp.yaml` | `overlays/production/webapp` | `name: prod` | **not yet** — add to `argocd_remote_apps` when the app is ready |
 
-Child Applications rendered by `app-cluster-operators.yaml` (defined in
-`cluster-operators/apps/`, not directly in `argocd/`):
+Child Applications rendered by the two `app-cluster-operators-*.yaml`
+parents (defined in `cluster-operators/apps-staging/` and
+`apps-production/`, not directly in `argocd/`):
 
-| File | Watches path | Destination namespace | Sync wave |
-|---|---|---|---|
-| `cert-manager.yaml` | `cluster-operators/cert-manager` | `cert-manager` | 0 |
-| `cnpg.yaml` | `cluster-operators/cnpg` | `cnpg-system` | 0 |
-| `sealed-secrets.yaml` | `cluster-operators/sealed-secrets` | `kube-system` (hardcoded by the upstream manifest, not this field) | 0 |
-| `cnpg-barman-plugin.yaml` | `cluster-operators/cnpg-barman-plugin` | `cnpg-system` | 1 |
+| File | Watches path | Destination namespace | Sync wave | In staging's set / production's set |
+|---|---|---|---|---|
+| `cert-manager.yaml` | `cluster-operators/cert-manager` | `cert-manager` | 0 | both |
+| `cnpg.yaml` | `cluster-operators/cnpg` | `cnpg-system` | 0 | both |
+| `sealed-secrets.yaml` | `cluster-operators/sealed-secrets` | `kube-system` (hardcoded by the upstream manifest, not this field) | 0 | both |
+| `cnpg-barman-plugin.yaml` | `cluster-operators/cnpg-barman-plugin` | `cnpg-system` | 1 | production only |
 
 This is the actual GitOps loop: **commit a change to this repo → ArgoCD
-notices the diff → applies it to the cluster.** There is no separate "deploy"
-step beyond pushing to `main` (staging/production image tag bumps are
-typically automated by `gami-app`'s release workflow, per the design plan in
-`.claude/plans/infrastructure-cicd-plan.md`), and — as of the
-`cluster-operators/` Applications above — no manual `kubectl apply` step
+notices the diff → applies it to whichever cluster the Application targets.**
+There is no separate "deploy" step beyond pushing to `main` (staging/production
+image tag bumps are typically automated by `gami-app`'s release workflow, per
+the design plan in `.claude/plans/infrastructure-cicd-plan.md`), and — as of
+the `cluster-operators/` Applications above — no manual `kubectl apply` step
 left for cluster bootstrap either.
 
 ### `.claude/plans/infrastructure-cicd-plan.md`
@@ -417,7 +465,9 @@ The original design document this repo was scaffolded from — CI/CD pipeline
 design (GitHub Actions in the separate `gami-app` repo), the full secrets
 bootstrap/rotation runbook, verification checklist, and rollout order. Kept
 as a historical record and a deeper reference for *why* things are shaped
-this way; the environment READMEs are the actionable, step-by-step version.
+this way; it predates the split into two independent clusters (it still
+describes the old shared 3-node/dev-staging-production design) — the
+environment READMEs are the actionable, current, step-by-step version.
 
 ---
 
@@ -425,8 +475,7 @@ this way; the environment READMEs are the actionable, step-by-step version.
 
 - Setting up a sandbox to learn the stack, test an Ansible change, or
   reproduce a bug without touching real infrastructure → **[README-local.md](README-local.md)**
-- Deploying an app change to the shared dev environment →
-  **[README-dev.md](README-dev.md)**
-- Deploying an app change to the shared staging environment for QA →
+- Deploying an app change to the shared staging environment for QA, or
+  bootstrapping the real infrastructure for the first time →
   **[README-staging.md](README-staging.md)**
 - Cutting a production release → **[README-production.md](README-production.md)**

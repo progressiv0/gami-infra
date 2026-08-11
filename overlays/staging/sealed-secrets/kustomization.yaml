@@ -3,20 +3,18 @@ kind: Kustomization
 
 # gami-secrets.yaml holds NEXTAUTH_SECRET only — gami-api's
 # GAMI_JWT_SECRET/GAMI_API_TOKEN are gone along with gami-api itself (see
-# README.md). Independently generated from dev/production's, never copied
-# over.
+# README.md). Independently generated from production's, never copied over.
+# Sealed against staging's OWN Sealed Secrets controller — a fresh
+# controller/keypair, distinct from production's (see
+# cluster-operators/apps-staging/sealed-secrets.yaml).
 #
-# gami-postgres-app.yaml not sealed yet — since staging's Postgres is now a
-# plain Deployment (../postgres.yaml), not CNPG, there's no operator to
-# auto-generate this Secret anymore. Add it here once sealed: needs
-# POSTGRES_DB=gami_staging, POSTGRES_USER=gami, a generated
-# POSTGRES_PASSWORD, and a matching `uri` connection string (see
-# overlays/dev/sealed-secrets/gami-postgres-app.yaml for the exact shape —
-# dev's was sealed directly against the local test cluster; staging's needs
-# sealing against the real hcloud cluster's own sealed-secrets cert).
+# No gami-postgres-app.yaml — staging's Postgres is CNPG now (see
+# ../postgres-cluster.yaml), which auto-generates and manages that Secret
+# itself; there's no operator-less plain Deployment here anymore to hand-seal
+# one for.
 #
-# gami-smtp.yaml not sealed yet — add it here once real SMTP credentials
-# are provided (see README-staging.md's secrets bootstrap section).
+# No gami-smtp.yaml — staging uses Mailpit (../mailpit.yaml) as its SMTP
+# catcher, so there are no real SMTP credentials to seal.
 #
 # No gami-signing-key.yaml — institution signing keys are per-institution
 # application data now (managed in Postgres, see gami-app's
