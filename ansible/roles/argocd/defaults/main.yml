@@ -1,6 +1,14 @@
 argocd_install_url: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 argocd_namespace: argocd
+# Controller-side path — where the manifests live in this checkout.
 argocd_app_path: "{{ project_root }}/argocd"
+# Target-side path — where those manifests get staged on the node. Every
+# task here shells out to `k3s kubectl` ON the node, so every `-f` path has
+# to exist THERE, not on the Ansible controller. These are the same machine
+# under playbooks/local.yml (connection: local) but NOT under site.yml,
+# which reaches both nodes over SSH — hence the copy-then-apply pattern in
+# tasks/main.yml rather than applying argocd_app_path directly.
+argocd_remote_dir: /opt/gami-infra
 argocd_wait_retries: 30
 argocd_wait_delay: 10
 

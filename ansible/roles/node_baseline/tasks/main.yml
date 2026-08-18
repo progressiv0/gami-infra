@@ -64,8 +64,19 @@
     - "443"
     - "6443"
 
+# ArgoCD's web UI NodePort — staging only, since that's the one node ArgoCD
+# runs on (see roles/argocd/files/traefik-argocd-entrypoint.yaml, where 30443
+# is pinned). The Hetzner firewall is what restricts this to admin_ip_cidr
+# (terraform/main.tf's argocd_ui firewall); like every rule above, this layer
+# just opens the port and lets the cloud firewall scope the source.
+- name: Allow the ArgoCD UI NodePort (staging only)
+  community.general.ufw:
+    rule: allow
+    port: "30443"
+    proto: tcp
+  when: hostvars[inventory_hostname].hcloud_labels.env == 'staging'
+
 - name: Enable ufw
   community.general.ufw:
     state: enabled
     policy: deny
-

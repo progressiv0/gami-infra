@@ -33,18 +33,38 @@
   delay: "{{ argocd_wait_delay }}"
   changed_when: false
 
-- name: Copy local ArgoCD Application manifests to the remote host
+# Staged onto the node because the applies below run there, not here (see
+# argocd_remote_dir, roles/argocd/defaults/main.yml). The whole directory
+# goes across, not just argocd_local_apps, so register-remote-cluster.yml
+# finds the production manifests already in place.
+# `copy` only creates the destination directory when it's copying a whole
+# directory into it (the trailing-slash form below); for a dest that names a
+# single file it expects the parent to exist already. Create both up front
+# rather than relying on that asymmetry.
+- name: Create the staging directories on the node
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ argocd_remote_dir }}"
+    - "{{ argocd_remote_dir }}/argocd"
+    - "{{ argocd_remote_dir }}/files"
+
+- name: Stage the ArgoCD Application manifests on the node
   ansible.builtin.copy:
-    src: "{{ argocd_app_path }}/{{ item }}"
-    dest: "/tmp/{{ item }}"
-  loop: "{{ argocd_local_apps }}"
+    src: "{{ argocd_app_path }}/"
+    dest: "{{ argocd_remote_dir }}/argocd/"
+    mode: "0644"
 
-- name: Apply local ArgoCD Application manifests
-  ansible.builtin.command:
-    cmd: "k3s kubectl apply -f /tmp/{{ item }}"
-  loop: "{{ argocd_local_apps }}"
-  changed_when: true
-
+- name: Stage this role's own manifests on the node
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ argocd_remote_dir }}/files/{{ item }}"
+    mode: "0644"
+  loop:
+    - traefik-argocd-entrypoint.yaml
+    - ingressroute.yaml
 
 # Everything ArgoCD manages locally (itself + staging, or the local rig's
 # mirror of staging) — see argocd_local_apps' own comment
@@ -54,13 +74,13 @@
 # cluster isn't registered yet at this point in the install.
 - name: Apply local ArgoCD Application manifests
   ansible.builtin.command:
-    cmd: "k3s kubectl apply -f {{ argocd_app_path }}/{{ item }}"
+    cmd: "k3s kubectl apply -f {{ argocd_remote_dir }}/argocd/{{ item }}"
   loop: "{{ argocd_local_apps }}"
   changed_when: true
 
 - name: Add ArgoCD's dedicated Traefik entrypoint (port {{ argocd_ingress_port }})
   ansible.builtin.command:
-    cmd: k3s kubectl apply -f {{ role_path }}/files/traefik-argocd-entrypoint.yaml
+    cmd: k3s kubectl apply -f {{ argocd_remote_dir }}/files/traefik-argocd-entrypoint.yaml
   register: argocd_traefik_entrypoint
   changed_when: "'created' in argocd_traefik_entrypoint.stdout or 'configured' in argocd_traefik_entrypoint.stdout"
 
@@ -81,7 +101,7 @@
 
 - name: Expose the ArgoCD server via IngressRoute
   ansible.builtin.command:
-    cmd: k3s kubectl apply -f {{ role_path }}/files/ingressroute.yaml
+    cmd: k3s kubectl apply -f {{ argocd_remote_dir }}/files/ingressroute.yaml
   register: argocd_ingressroute
   changed_when: "'created' in argocd_ingressroute.stdout or 'configured' in argocd_ingressroute.stdout"
 
@@ -93,16 +113,15 @@
 # cluster, blocks the whole sync-wave chain (gami-migrate/postgres-cluster
 # never even get created). See files/ingress-health-check.lua for the
 # full explanation.
-- name: Read the custom Ingress health check Lua script
-  ansible.builtin.slurp:
-    src: "{{ role_path }}/files/ingress-health-check.lua"
-  register: ingress_health_lua
-
+# `lookup` reads on the controller, where the role actually lives — unlike
+# slurp, which would read from the node and never find role_path there.
 - name: Patch argocd-cm with the Ingress health check override
+  vars:
+    ingress_health_lua: "{{ lookup('file', role_path ~ '/files/ingress-health-check.lua') }}"
   ansible.builtin.command:
     cmd: >
       k3s kubectl patch configmap argocd-cm -n {{ argocd_namespace }}
       --type merge -p
-      {{ ({'data': {'resource.customizations.health.networking.k8s.io_Ingress': ingress_health_lua.content | b64decode}} | to_json) | quote }}
+      {{ ({'data': {'resource.customizations.health.networking.k8s.io_Ingress': ingress_health_lua}} | to_json) | quote }}
   register: argocd_ingress_health_patch
   changed_when: "'patched' in argocd_ingress_health_patch.stdout"

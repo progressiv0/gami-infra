@@ -89,9 +89,25 @@
     cmd: k3s kubectl apply -f /tmp/argocd-prod-cluster-secret.yaml
   changed_when: true
 
+# Normally already staged by tasks/main.yml earlier in the same run; repeated
+# here (idempotent) so this file also works when included on its own.
+- name: Create the staging directory on the node
+  ansible.builtin.file:
+    path: "{{ argocd_remote_dir }}/argocd"
+    state: directory
+    mode: "0755"
+  when: argocd_remote_apps | length > 0
+
+- name: Stage the ArgoCD Application manifests on the node
+  ansible.builtin.copy:
+    src: "{{ argocd_app_path }}/"
+    dest: "{{ argocd_remote_dir }}/argocd/"
+    mode: "0644"
+  when: argocd_remote_apps | length > 0
+
 - name: Apply ArgoCD Application manifests targeting the registered remote cluster
   ansible.builtin.command:
-    cmd: "k3s kubectl apply -f {{ argocd_app_path }}/{{ item }}"
+    cmd: "k3s kubectl apply -f {{ argocd_remote_dir }}/argocd/{{ item }}"
   loop: "{{ argocd_remote_apps }}"
   when: argocd_remote_apps | length > 0
   changed_when: true
