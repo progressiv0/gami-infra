@@ -24,11 +24,19 @@
     shell: /bin/bash
     create_home: true
 
+- name: Require ssh_public_key_path (no key means ops is locked out)
+  ansible.builtin.assert:
+    that: ssh_public_key_path is defined
+    fail_msg: >-
+      ssh_public_key_path is not set. This must point at the public key
+      you'll use to connect as ops afterward (same one Terraform put on
+      root) — pass it with -e ssh_public_key_path=~/.ssh/id_ed25519.pub.
+      Without it, ops is created with no key and you'll be locked out.
+
 - name: Install the ops SSH key (same one Terraform put on root)
   ansible.posix.authorized_key:
     user: ops
     key: "{{ lookup('file', ssh_public_key_path) }}"
-  when: ssh_public_key_path is defined
 
 - name: Allow passwordless sudo for ops
   ansible.builtin.copy:
@@ -60,3 +68,4 @@
   community.general.ufw:
     state: enabled
     policy: deny
+

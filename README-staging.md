@@ -125,9 +125,26 @@ IPs matching `.2`/`.3`).
 
 ### 3. Bootstrap both clusters + ArgoCD (Ansible)
 
+`inventory/production.yml` sets `ansible_user: ops` — but on a fresh
+server, `ops` doesn't exist yet (`node_baseline` is what creates it). The
+**very first** run against a new node must connect as `root` instead, and
+must pass `ssh_public_key_path` so the role has a key to install onto the
+new `ops` user (the same key Terraform put on `root`) — otherwise `ops`
+gets created with no key and you're locked out of it:
+
 ```bash
 cd gami-infra/ansible
 
+ansible-playbook -i inventory/production.yml playbooks/site.yml \
+  -e ansible_user=root \
+  -e ssh_public_key_path=~/.ssh/id_ed25519.pub
+```
+
+Every run after that — once `ops` exists with your key and passwordless
+sudo on both nodes — drops both overrides and just uses what
+`inventory/production.yml` already declares:
+
+```bash
 ansible-playbook -i inventory/production.yml playbooks/site.yml
 ```
 
@@ -434,3 +451,4 @@ Staging-specific things to check first:
   argocd.argoproj.io/secret-type=cluster` should show a `prod` entry. If
   it's missing, re-run `site.yml` (idempotent) or the
   `register-remote-cluster.yml` tasks by hand.
+

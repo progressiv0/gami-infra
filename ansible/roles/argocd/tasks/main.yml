@@ -33,6 +33,19 @@
   delay: "{{ argocd_wait_delay }}"
   changed_when: false
 
+- name: Copy local ArgoCD Application manifests to the remote host
+  ansible.builtin.copy:
+    src: "{{ argocd_app_path }}/{{ item }}"
+    dest: "/tmp/{{ item }}"
+  loop: "{{ argocd_local_apps }}"
+
+- name: Apply local ArgoCD Application manifests
+  ansible.builtin.command:
+    cmd: "k3s kubectl apply -f /tmp/{{ item }}"
+  loop: "{{ argocd_local_apps }}"
+  changed_when: true
+
+
 # Everything ArgoCD manages locally (itself + staging, or the local rig's
 # mirror of staging) — see argocd_local_apps' own comment
 # (roles/argocd/defaults/main.yml). Production's Applications are applied

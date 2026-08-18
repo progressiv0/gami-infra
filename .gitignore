@@ -1,0 +1,31 @@
+# Secrets / local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!ansible/roles/argocd/files/*.key
+
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+terraform/crash.log
+terraform/crash.*.log
+terraform/override.tf
+terraform/override.tf.json
+terraform/*_override.tf
+terraform/*_override.tf.json
+
+# Ansible
+ansible/*.retry
+ansible/.vault_pass*
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
