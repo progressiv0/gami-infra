@@ -19,6 +19,16 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: gami-gpr-store
+  annotations:
+    # Wave 1, matching the gami-webapp Deployment that mounts it (patched in
+    # overlays/staging/kustomization.yaml) rather than the default wave 0.
+    # local-path is WaitForFirstConsumer, so this PVC stays Pending until a
+    # pod mounting it is scheduled — and ArgoCD reads Pending as Progressing,
+    # not Healthy. Left in wave 0 it deadlocks: wave 0 never goes Healthy, so
+    # wave 1 never deploys the only consumer that would let it bind. Same
+    # wave as its consumer is the fix, exactly as postgres.yaml pairs
+    # gami-postgres-data with its Deployment in wave -1.
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   accessModes: ["ReadWriteOnce"]
   storageClassName: local-path

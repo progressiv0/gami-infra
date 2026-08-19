@@ -1,0 +1,68 @@
+---
+# Creates the ghcr-pull-secret every Deployment/Job references under
+# imagePullSecrets. GHCR packages are private even when the source repo is
+# public (package visibility is a separate GitHub setting), so the kubelet
+# needs a registry credential to pull ghcr.io/authenticmemory/gami-webapp at
+# all — without this, pods sit in ImagePullBackOff.
+#
+# Runs on BOTH clusters, into each one's own app namespace: imagePullSecrets
+# resolves in the pod's namespace, so a single shared copy is not possible.
+#
+# Sourced from GHCR_USERNAME/GHCR_PAT on the controller, same model as
+# argocd/tasks/repo-credentials.yml — the credential reaches the cluster
+# without ever entering git. Skipped entirely (no-op) if GHCR_PAT isn't set,
+# so a fork pulling only public images needs no setup.
+# GHCR ignores the username when the password is a PAT, but it must still be
+# non-empty or the registry rejects the credential outright — so an unset
+# GHCR_USERNAME defaults to "git" rather than rendering an empty string into
+# the dockerconfigjson (same fallback repo-credentials.yml uses).
+- name: Read GHCR credentials from the environment
+  ansible.builtin.set_fact:
+    ghcr_username: "{{ lookup('env', 'GHCR_USERNAME') | default('git', true) }}"
+    ghcr_pat: "{{ lookup('env', 'GHCR_PAT') }}"
+  no_log: true
+
+- name: Warn when GHCR credentials are absent
+  ansible.builtin.debug:
+    msg: >-
+      GHCR_PAT is not set, so {{ image_pull_secret_name }} will not be
+      created in {{ image_pull_secret_namespace }}. Pods referencing it will
+      stay in ImagePullBackOff unless the packages are public. Set
+      GHCR_USERNAME/GHCR_PAT in .env and re-run.
+  when: ghcr_pat | length == 0
+
+# ArgoCD's Applications set CreateNamespace=true, but this role runs BEFORE
+# ArgoCD's first sync (see playbooks/site.yml's ordering) — so on a fresh
+# cluster the namespace does not exist yet and the apply below would fail.
+- name: Ensure the application namespace exists
+  ansible.builtin.command:
+    cmd: k3s kubectl create namespace {{ image_pull_secret_namespace }}
+  register: image_pull_secret_ns
+  changed_when: "'created' in image_pull_secret_ns.stdout"
+  # Matches kubectl's human-readable message ('... already exists'), not the
+  # API's AlreadyExists StatusReason — kubectl create never prints the latter.
+  failed_when: >
+    image_pull_secret_ns.rc != 0 and
+    'already exists' not in image_pull_secret_ns.stderr
+  when: ghcr_pat | length > 0
+
+- name: Render the image pull Secret
+  ansible.builtin.template:
+    src: ghcr-pull-secret.yaml.j2
+    dest: /tmp/ghcr-pull-secret-{{ image_pull_secret_namespace }}.yaml
+    mode: "0600"
+  when: ghcr_pat | length > 0
+
+# apply, not create: this is the rotation path too — re-running with a new
+# PAT in .env overwrites the old credential in place.
+- name: Apply the image pull Secret
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f /tmp/ghcr-pull-secret-{{ image_pull_secret_namespace }}.yaml
+  when: ghcr_pat | length > 0
+  changed_when: true
+
+- name: Remove the rendered Secret from the node
+  ansible.builtin.file:
+    path: /tmp/ghcr-pull-secret-{{ image_pull_secret_namespace }}.yaml
+    state: absent
+  when: ghcr_pat | length > 0

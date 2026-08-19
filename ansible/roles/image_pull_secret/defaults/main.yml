@@ -1,0 +1,13 @@
+---
+# The namespace the Secret lands in. imagePullSecrets is resolved in the
+# POD's own namespace, not a shared one, so this has to match each
+# environment's app namespace: gami-staging on staging, gami on production
+# (see overlays/staging/kustomization.yaml's `namespace:` and base/'s). The
+# default is production's; playbooks/site.yml overrides it per host.
+image_pull_secret_namespace: gami
+
+# Must match the name every Deployment/Job hardcodes under imagePullSecrets
+# — see base/gami-webapp/deployment.yaml and base/gami-migrate-job.yaml.
+image_pull_secret_name: ghcr-pull-secret
+
+image_pull_secret_registry: ghcr.io

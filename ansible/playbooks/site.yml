@@ -30,6 +30,21 @@
   roles:
     - app_secrets
 
+# Both clusters, not just staging: imagePullSecrets is resolved in the pod's
+# own namespace, so each cluster needs its own copy in its own app namespace.
+# Production gets one now even though app-gami-production-webapp.yaml isn't
+# in argocd_remote_apps yet — so bringing it online later stays the one-line
+# change that file's comment promises.
+- name: Install the GHCR image pull secret on both clusters
+  hosts: k3s_server
+  become: true
+  roles:
+    - role: image_pull_secret
+      image_pull_secret_namespace: >-
+        {{ 'gami-staging'
+           if hostvars[inventory_hostname].hcloud_labels.env == 'staging'
+           else 'gami' }}
+
 - name: Install ArgoCD on staging (the one central instance)
   hosts: env_staging
   become: true
