@@ -6,7 +6,7 @@
   changed_when: "'created' in argocd_namespace_create.stdout"
   failed_when: >
     argocd_namespace_create.rc != 0 and
-    'AlreadyExists' not in argocd_namespace_create.stderr
+    'already exists' not in argocd_namespace_create.stderr
 
 - name: Register this repo's git credentials with ArgoCD (if private)
   ansible.builtin.import_tasks: repo-credentials.yml

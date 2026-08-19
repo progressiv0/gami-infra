@@ -108,9 +108,10 @@ unvalidated-HCL step called out above. Confirm it proposes only: 2
 (`10.10.0.0/24`), two `hcloud_server_network` attachments pinning
 `gami-staging` to `10.10.0.2` and `gami-prod` to `10.10.0.3`, the main
 `hcloud_firewall` (22/6443 restricted to `admin_ip_cidr`, 80/443 public)
-attached to both servers, and a second `hcloud_firewall` opening 6443 only
-to the `10.10.0.0/24` subnet, attached only to `gami-prod`. **No `hcloud_server`
-resource should appear.**
+attached to both servers, a second `hcloud_firewall` opening 6443 only to
+the `10.10.0.0/24` subnet attached only to `gami-prod`, and a third opening
+the ArgoCD UI's NodePort 30443 to `admin_ip_cidr` attached only to
+`gami-staging`. **No `hcloud_server` resource should appear.**
 
 If the plan looks right:
 
@@ -189,23 +190,45 @@ KUBECONFIG=<prod kubeconfig> kubectl get nodes -L env      # just gami-prod, sep
 There's no single `kubectl get nodes` that shows both — they're two
 completely separate API servers now.
 
-**ArgoCD access after bootstrap**: Traefik exposes it on a NodePort (see
-`ansible/roles/argocd/defaults/main.yml`'s `argocd_ingress_port`, default
-8443 internally / 30443 as the pinned NodePort) on `gami-staging`'s IP only
-— there's no ArgoCD instance on `gami-prod` to reach. Get the admin
-password:
+**ArgoCD access after bootstrap**: the UI lives on `gami-staging` only —
+there's no ArgoCD instance on `gami-prod` to reach. Traefik serves it on its
+own dedicated entrypoint (`roles/argocd/files/traefik-argocd-entrypoint.yaml`),
+and since `servicelb` is disabled the pinned **NodePort 30443** is the actual
+reachable path, not the entrypoint's own 8443:
+
+```
+https://<gami-staging's public IP>:30443
+```
+
+That port is opened **only to `TF_VAR_admin_ip_cidr`**, at both layers — the
+Hetzner cloud firewall (`terraform/main.tf`'s `argocd_ui` firewall, attached
+to staging only) and ufw (`roles/node_baseline/tasks/main.yml`). Two
+consequences worth knowing up front:
+- If your IP rotates you lose the UI along with SSH, and need a
+  `terraform apply` with the new CIDR to get both back.
+- Expect a **browser certificate warning**: the IngressRoute has a bare
+  `tls: {}` with no cert-manager annotation, so Traefik serves its own
+  self-signed cert. That's expected here, not a misconfiguration — the
+  connection is still encrypted.
+
+Get the admin password:
 ```bash
 KUBECONFIG=<staging kubeconfig> kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath='{.data.password}' | base64 -d; echo
 ```
-For anything beyond one-off checks, put this behind a real hostname +
-Let's Encrypt cert (an `Ingress`/`IngressRoute` with
-`cert-manager.io/cluster-issuer: letsencrypt-production`) rather than relying
-on the raw NodePort long-term. Once logged in, you should see **both**
-clusters listed under Settings → Clusters — `in-cluster` (staging, where
-ArgoCD itself runs) and `prod` (the registered remote).
+If you'd rather not depend on a stable admin IP, the alternative that needs
+no firewall opening at all is an SSH tunnel over the port-22 access you
+already have — `ssh -L 8080:localhost:30443 ops@<gami-staging IP>`, then
+browse `https://localhost:8080`. Putting ArgoCD behind a real hostname +
+Let's Encrypt cert on 443 instead would drop the cert warning, but it would
+also expose the admin login page to the whole internet — don't do that
+without an IP-allowlist middleware and a rotated admin password.
 
-### 4. Cluster operators (cert-manager, CNPG, Sealed Secrets) — automatic, just confirm they came up
+Once logged in, you should see **both** clusters listed under Settings →
+Clusters — `in-cluster` (staging, where ArgoCD itself runs) and `prod` (the
+registered remote).
+
+### 4. Cluster operators (cert-manager, Sealed Secrets) — automatic, just confirm they came up
 
 Unlike an earlier version of this repo, **none of these are a manual
 install step anymore** — `argocd/app-cluster-operators-staging.yaml` and
@@ -215,11 +238,10 @@ automatically as soon as ArgoCD exists and production is registered, since
 step 3 above applies both. Just confirm they actually came up:
 
 ```bash
-# On staging:
+# On staging (cert-manager + Sealed Secrets only — staging installs no CNPG,
+# see below):
 KUBECONFIG=<staging kubeconfig> kubectl get application cluster-operators-staging -n argocd
 KUBECONFIG=<staging kubeconfig> kubectl get pods -n cert-manager
-KUBECONFIG=<staging kubeconfig> kubectl get pods -n cnpg-system
-KUBECONFIG=<staging kubeconfig> kubectl get pods -n kube-system -l name=sealed-secrets-controller
 
 # On production (separate cluster, separate kubeconfig):
 KUBECONFIG=<prod kubeconfig> kubectl get pods -n cert-manager
@@ -238,21 +260,27 @@ kubectl patch application cluster-operators-production -n argocd --type merge \
   -p '{"operation":{"sync":{"revision":"HEAD"},"initiatedBy":{"username":"admin"}}}'
 ```
 
-Staging's Postgres (`overlays/staging/postgres-cluster.yaml`) **is** CNPG
-now — same operator as production, `instances: 1`, but with **no backup at
-all** (no `ObjectStore`/`ScheduledBackup`/Barman plugin) — a documented,
-deliberate tradeoff, not an oversight. CNPG auto-generates and manages the
-`gami-postgres-app` Secret itself; there's no hand-sealing step for it the
-way an earlier plain-Postgres-Deployment design needed.
+Staging's Postgres (`overlays/staging/postgres.yaml`) is a **plain,
+unmanaged `postgres:18-alpine` Deployment** — deliberately not CNPG. It needs
+no HA and has **no backup at all** (a documented, deliberate tradeoff, not an
+oversight), so the operator would be pure overhead; production is the only
+environment on CNPG. That's why staging's cluster-operators set installs
+neither `cnpg` nor the Barman plugin.
 
-**Sealed Secrets lands in `kube-system`, not its own namespace** — the
-upstream `controller.yaml` hardcodes that namespace on every resource it
-defines. `kubeseal --fetch-cert` needs `--controller-namespace kube-system
---controller-name sealed-secrets-controller` to match (see the secrets
-bootstrap steps below). Staging and production each run their **own**
-Sealed Secrets controller with their **own** keypair — a SealedSecret
-sealed against one is permanently undecryptable against the other, so
-always fetch the cert from the cluster you're actually sealing for.
+The consequence for secrets: nothing generates `gami-postgres-app` here the
+way CNPG does for production — Ansible's `app_secrets` role creates it on the
+cluster instead (step 6 below), so staging needs no SealedSecrets and doesn't
+install the sealed-secrets controller at all. Its data lives on a
+`local-path` PVC, which survives pod restarts, redeploys and node reboots,
+but not loss of the node itself.
+
+**On production**, Sealed Secrets lands in `kube-system`, not its own
+namespace — the upstream `controller.yaml` hardcodes that namespace on every
+resource it defines. `kubeseal --fetch-cert` needs `--controller-namespace
+kube-system --controller-name sealed-secrets-controller` to match. Always
+fetch the cert from the cluster you're actually sealing for; a SealedSecret
+sealed against one cluster's keypair is permanently undecryptable against
+another's.
 
 Traefik does **not** need separate installation — k3s bundles it (that's why
 `k3s_disable` in `ansible/roles/k3s_server/defaults/main.yml` disables
@@ -274,63 +302,46 @@ step rather than a committed manifest (even a sealed one) — it's a
 long-lived registry credential, not an app secret with its own rotation
 story.
 
-### 6. Seal staging's secrets
+### 6. Staging's secrets — nothing to do
 
-Staging needs its **own**, independently-generated secrets — never copy
-production's. `gami-webapp` doesn't need much: no separate backend service
-exists anymore (see [README.md](README.md)), so the only app secret is
-`NEXTAUTH_SECRET`.
+Staging's two Secrets are generated **on the cluster, automatically**, by
+`site.yml`'s `app_secrets` role (step 3 above), so there is no `kubeseal`
+step here and no credential in git:
 
-```bash
-NEXTAUTH_SECRET=$(openssl rand -hex 32)
+| Secret | Keys | Used by |
+|---|---|---|
+| `gami-postgres-app` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `uri` | the Postgres container initialises itself from `POSTGRES_*` via `envFrom`; `gami-webapp`/`gami-migrate` connect using `uri` |
+| `gami-secrets` | `NEXTAUTH_SECRET` | `gami-webapp` |
 
-# Fetch STAGING's own controller's public key (safe from anywhere — encrypt-only)
-kubeseal --fetch-cert \
-  --controller-namespace kube-system \
-  --controller-name sealed-secrets-controller > /tmp/sealed-secrets-cert-staging.pem
+The password is written into `POSTGRES_PASSWORD` and into `uri` from the same
+shell variable on the node, so the two copies cannot drift apart, and the
+plaintext never reaches the Ansible controller or git.
 
-# Seal straight into the staging overlay
-kubectl create secret generic gami-secrets \
-  --namespace gami-staging \
-  --from-literal=NEXTAUTH_SECRET="$NEXTAUTH_SECRET" \
-  --dry-run=client -o yaml \
-  | kubeseal --cert /tmp/sealed-secrets-cert-staging.pem -o yaml \
-  > overlays/staging/sealed-secrets/gami-secrets.yaml
-```
+Both are **generate-once**: the role checks whether each Secret exists and
+skips it if so, so re-running `site.yml` never rotates them. That's deliberate
+— `POSTGRES_PASSWORD` is only read by initdb on the database's very first
+start, so rotating it would leave Postgres on the old password while the app
+connects with the new one, and rotating `NEXTAUTH_SECRET` would invalidate
+every active session and outstanding magic-link.
 
-That's the **only** secret staging needs to hand-seal:
-- **No `gami-smtp.yaml`** — staging uses Mailpit (`overlays/staging/mailpit.yaml`)
-  as its SMTP catcher (`SMTP_HOST=mailpit`, `SMTP_PORT=1025` in
-  `overlays/staging/kustomization.yaml`'s `configMapGenerator`) instead of
-  real SMTP credentials. Outbound email (magic-link sign-in, DID-publish
-  notices) lands in Mailpit's own store instead of actually being sent
-  anywhere — read a captured message with `kubectl port-forward -n
-  gami-staging svc/mailpit 8025:8025` and browsing to `localhost:8025`.
-  Deliberately not exposed via NodePort/Ingress, since it captures real
-  single-use sign-in links.
-- **No `gami-postgres-app.yaml`** — staging's Postgres is CNPG
-  (`overlays/staging/postgres-cluster.yaml`), which auto-generates and
-  manages that Secret itself. There's no plain Deployment here anymore to
-  hand-seal one for.
+To rotate on purpose, delete the Secret and re-run `site.yml` — and for the
+database, wipe the PVC too (`kubectl -n gami-staging delete pvc
+gami-postgres-data`), since an existing data directory keeps the old
+password. Staging has no backup, so treat that as destroying the data.
+
+Because ArgoCD only prunes resources it created itself, these hand-made
+Secrets are never touched by a sync — the same reason `ghcr-pull-secret`
+(step 5) is safe to create out of band.
+
+Staging therefore runs **no SealedSecrets at all**, which is why its cluster
+doesn't install the sealed-secrets controller (see
+`cluster-operators/apps-staging/`). Production is different: it still seals
+`gami-secrets`/`gami-smtp` into git, and CNPG generates its database
+credentials — see [README-production.md](README-production.md).
 
 Institution signing keys are **not** a cluster secret at all — they're
 per-institution application data managed in Postgres (`gami-app`'s
-`src/lib/institution-keys.ts`), created through the app's own UI/API, not
-sealed here.
-
-`overlays/staging/sealed-secrets/kustomization.yaml`'s `resources:` list
-already just has:
-
-```yaml
-resources:
-  - gami-secrets.yaml
-```
-
-```bash
-git add overlays/staging/sealed-secrets/
-git commit -m "chore: seal staging secrets"
-git push
-```
+`src/lib/institution-keys.ts`), created through the app's own UI/API.
 
 ### 7. Apply the ArgoCD Application
 
@@ -356,36 +367,40 @@ kubectl get application gami-staging -n argocd -w
 
 ## Deploying an app change to staging
 
-This is the day-to-day path once the infrastructure exists. Staging deploys
-are **not** gated behind the same manual release process as production —
-bump the image tag directly and push:
+This is the day-to-day path once the infrastructure exists, and it is fully
+automatic: **push to `gami-app`'s `staging` branch and nothing else is
+needed.**
 
-```bash
-cd overlays/staging
-kustomize edit set image \
-  ghcr.io/authenticmemory/gami-webapp=ghcr.io/authenticmemory/gami-webapp:<tag> \
-  ghcr.io/authenticmemory/gami-webapp-migrate=ghcr.io/authenticmemory/gami-webapp:<tag>-migrate
+1. `gami-app`'s `release.yml` builds the image and pushes it as
+   `ghcr.io/authenticmemory/gami-webapp:staging-<short-sha>` — a unique tag,
+   never reused.
+2. The same workflow's `bump-staging` job checks out **this** repo, runs
+   `kustomize edit set image` in `overlays/staging/`, and commits.
+3. ArgoCD (`syncPolicy.automated`) sees the changed tag and syncs.
 
-git add kustomization.yaml
-git commit -m "deploy: bump staging to <tag>"
-git push
-```
-
-ArgoCD (with `syncPolicy.automated`) picks up the commit automatically —
-usually within its polling interval, or immediately if you trigger a manual
-sync from the ArgoCD UI/CLI. No SSH, no manual `kubectl apply` needed for a
-routine image bump.
+That commit is what makes the deploy visible to ArgoCD at all — it syncs on a
+manifest diff, so the tag has to actually change. **Don't hand-edit the
+`images:` tag in `overlays/staging/kustomization.yaml`**; CI owns it and will
+overwrite you on the next push.
 
 **What happens on sync, in order:**
-1. `gami-migrate` Job (sync-wave 0) runs `npm run db:setup` against the
-   `-migrate` image tag — must complete successfully before anything else
-   proceeds.
-2. The `gami-webapp` Deployment rolls out (single pod), gated by
-   its readiness probe (`/api/public/health`).
+1. Postgres (sync-wave -1) comes up and reports Healthy.
+2. `gami-migrate` Job (sync-wave 0) runs `npm run db:setup` — the same image
+   as the webapp, just a different command — and must complete before
+   anything else proceeds. It re-runs on every deploy: the Job carries
+   `Replace=true`, and the changed image makes it a new manifest.
+3. The `gami-webapp` Deployment rolls out (single pod), gated by its
+   readiness probe (`/api/version`).
+
+Confirm what actually landed:
+```bash
+curl -sk https://staging.authenticmemory.org/api/version
+```
+`sha` there is the commit the running image was built from.
 
 **Non-image changes** (config, hostnames) — edit
-`overlays/staging/kustomization.yaml` directly, commit, push, same
-auto-sync applies.
+`overlays/staging/kustomization.yaml` directly, commit, push; ArgoCD picks
+those up the same way.
 
 ---
 
@@ -431,15 +446,16 @@ looking at — see [README-local.md](README-local.md)'s **Gotchas** section,
 which documents exact symptoms and fixes found while building this out.
 
 Staging-specific things to check first:
-- `overlays/staging/sealed-secrets/kustomization.yaml` actually lists the
-  sealed files you created (easy to forget — the file starts as `resources: []`).
+- `kubectl -n gami-staging get secret gami-postgres-app gami-secrets` returns
+  both — if either is missing, re-run `site.yml` (the `app_secrets` role
+  creates them and is safe to re-run; it won't rotate existing ones).
 - The image tags in `overlays/staging/kustomization.yaml` actually exist in
   `ghcr.io/authenticmemory/*` — a typo'd tag just shows as `ImagePullBackOff`.
 - `ghcr-pull-secret` exists in the `gami-staging` namespace specifically —
   it's namespace-scoped, so it won't help if it was only created in `gami`
   (production's namespace, on production's separate cluster).
-- Staging's Postgres (`overlays/staging/postgres-cluster.yaml`, CNPG,
-  `instances: 1`) has **no backup at all** — that's intentional (staging
+- Staging's Postgres (`overlays/staging/postgres.yaml`, a plain
+  `postgres:18-alpine` Deployment) has **no backup at all** — that's intentional (staging
   doesn't need to survive data loss the way production does), not a bug.
   Don't expect it to survive anything worse than a pod restart; if the
   `Cluster` itself gets wedged, see [README-local.md](README-local.md)'s

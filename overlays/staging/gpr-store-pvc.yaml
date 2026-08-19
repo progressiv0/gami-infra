@@ -1,0 +1,27 @@
+# Persistent home for staging's GPR file store. gami-webapp writes every
+# signed GPR to disk alongside its database row
+# (gami-webapp/src/lib/gpr-store.ts — `syncGprFile` does an mkdir +
+# writeFileSync on each save), which docker-compose backs with a
+# `./data/gpr-store` bind mount. Without a volume those writes land in the
+# container's own filesystem and vanish on every restart, leaving DB rows
+# pointing at files that no longer exist.
+#
+# Staging only — deliberately not in base/, so production doesn't inherit it
+# (see overlays/production/webapp/). Production's GPR persistence is an open
+# decision; until it's made, prod's webapp would keep GPR files only for the
+# lifetime of the pod.
+#
+# ReadWriteOnce is sufficient: gami-webapp runs a single replica on a
+# single-node cluster (see README.md's "Node topology"), and local-path —
+# k3s's bundled provisioner, the same one Postgres uses — is node-local
+# anyway, so RWX wouldn't buy anything without a networked storage layer.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gami-gpr-store
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi

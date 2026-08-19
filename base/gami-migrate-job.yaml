@@ -41,7 +41,13 @@ spec:
           # real `gami-webapp:TAG-migrate` tag (the `builder` stage, which has
           # npm/drizzle-kit/tsx; the distroless runner doesn't). See
           # gami-app's release.yml.
-          image: ghcr.io/authenticmemory/gami-webapp-migrate
+          # The same image the webapp runs — there is no separate `-migrate`
+          # build. The Dockerfile's runtime stage copies node_modules wholesale
+          # (installed with devDependencies, so drizzle-kit and tsx are there)
+          # plus src/, scripts/, drizzle.config.ts and package.json, which is
+          # everything `db:setup` (drizzle-kit push && tsx scripts/seed.ts)
+          # needs. Only the command differs.
+          image: ghcr.io/authenticmemory/gami-webapp
           command: ["npm", "run", "db:setup"]
           envFrom:
             - configMapRef:

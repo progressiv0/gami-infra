@@ -1,0 +1,11 @@
+---
+# Namespace the secrets are created in — must match the ArgoCD Application's
+# destination.namespace for this environment (argocd/app-gami-staging.yaml).
+app_secrets_namespace: gami-staging
+
+# Must match overlays/staging/postgres.yaml: the Postgres container reads
+# POSTGRES_USER/POSTGRES_DB from the same Secret this generates, and the app's
+# `uri` has to address the Service by name.
+app_secrets_postgres_user: gami
+app_secrets_postgres_db: gami
+app_secrets_postgres_service: gami-postgres

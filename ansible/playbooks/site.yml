@@ -19,6 +19,17 @@
   roles:
     - k3s_server
 
+# Before ArgoCD, so the Secrets exist the first time it syncs the staging
+# overlay — otherwise gami-postgres/gami-webapp/gami-migrate all sit in
+# CreateContainerConfigError until the next sync. Generate-once and never
+# rotated on re-runs; see the role for why.
+- name: Generate staging's application secrets
+  hosts: env_staging
+  become: true
+  run_once: true
+  roles:
+    - app_secrets
+
 - name: Install ArgoCD on staging (the one central instance)
   hosts: env_staging
   become: true

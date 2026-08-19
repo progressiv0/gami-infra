@@ -6,115 +6,143 @@ kind: Kustomization
 # resource names stay unambiguous if that ever changes.
 namespace: gami-staging
 
+# No sealed-secrets/ here: staging's two Secrets (gami-postgres-app,
+# gami-secrets) are generated directly on the cluster by Ansible's
+# app_secrets role, so they never enter git and never need hand-sealing.
+# Production still uses SealedSecrets — see overlays/production/webapp/.
 resources:
-- ../../base
-- sealed-secrets
-- postgres-cluster.yaml
-- mailpit.yaml
+  - ../../base
+  - postgres.yaml
+  - mailpit.yaml
+  - gpr-store-pvc.yaml
 
 # See overlays/production/kustomization.yaml for why this is disabled.
 generatorOptions:
   disableNameSuffixHash: true
 
 configMapGenerator:
-- literals:
-  - NODE_ENV=production
-  - CORS_ALLOWED_ORIGIN=https://staging.authenticmemory.org
-  - APP_BASE_URL=https://staging.authenticmemory.org
-  - NEXTAUTH_URL=https://staging.authenticmemory.org
-  - SECURE_COOKIES=true
-  - AUTH_TRUST_HOST=true
-  - SMTP_HOST=mailpit
-  - SMTP_PORT=1025
-  - SMTP_SECURE=false
-  - SMTP_FROM=noreply@authenticmemory.org
-  - SMTP_FROM_NAME=Authentic Memory (staging)
-  - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
-  name: gami-config
+  - name: gami-config
+    literals:
+      - NODE_ENV=production
+      - CORS_ALLOWED_ORIGIN=https://staging.authenticmemory.org
+      - APP_BASE_URL=https://staging.authenticmemory.org
+      - NEXTAUTH_URL=https://staging.authenticmemory.org
+      - SECURE_COOKIES=true
+      - AUTH_TRUST_HOST=true
+      - SMTP_HOST=mailpit
+      - SMTP_PORT=1025
+      - SMTP_SECURE=false
+      - SMTP_FROM=noreply@authenticmemory.org
+      - SMTP_FROM_NAME=Authentic Memory (staging)
+      - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
 
+# Rewritten automatically: every push to gami-app's `staging` branch builds
+# `staging-<short-sha>` and commits the new tag here (release.yml's
+# bump-staging job). The tag below is only the starting point — expect it to
+# change on its own, and don't hand-edit it.
+#
+# Tags are unique per build and never reused, which is what makes the deploy
+# visible to ArgoCD at all: it syncs on a manifest diff, so the tag has to
+# actually change. It's also why nothing sets imagePullPolicy: Always.
+# One entry covers both the Deployment and the migrate Job — same image,
+# different command.
 images:
-- name: ghcr.io/authenticmemory/gami-webapp
-  newName: ghcr.io/authenticmemory/gami-webapp
-  newTag: staging-adddfbe
-- name: ghcr.io/authenticmemory/gami-webapp-migrate
-  newName: ghcr.io/authenticmemory/gami-webapp
-  newTag: latest-migrate
+  - name: ghcr.io/authenticmemory/gami-webapp
+    newTag: staging-adddfbe
 
 replicas:
-- count: 1
-  name: gami-webapp
+  - name: gami-webapp
+    count: 1
 
 # Staging gets its own hostnames and the Let's Encrypt STAGING ACME endpoint
 # (untrusted-but-functional certs — avoids burning production's rate limits
 # while iterating). See cluster-wide/cert-manager/cluster-issuers.yaml for
 # both ClusterIssuers.
+patches:
   # gami-migrate-job.yaml (base/, sync-wave 0) reads this ConfigMap via
   # envFrom, so it needs to exist first — wave -1 guarantees that within
   # ArgoCD's normal Sync phase (see base/gami-migrate-job.yaml's comment for
   # why this is plain sync-wave ordering, not a PreSync hook: hooks run in a
   # separate phase that completes before ANY Sync-phase resource, including
   # this ConfigMap, is even attempted — confirmed against a real cluster).
+  - target:
+      kind: ConfigMap
+      name: gami-config
+    patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: gami-config
+        annotations:
+          argocd.argoproj.io/sync-wave: "-1"
+  - target:
+      kind: Ingress
+      name: gami-webapp
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: gami-webapp
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-staging
+      spec:
+        tls:
+          - hosts:
+              - staging.authenticmemory.org
+              - verify-staging.authenticmemory.org
+            secretName: gami-webapp-tls
+        rules:
+          - host: staging.authenticmemory.org
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: gami-webapp
+                      port:
+                        number: 3000
+          - host: verify-staging.authenticmemory.org
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: gami-webapp
+                      port:
+                        number: 3000
   # sync-wave 1: ArgoCD waits for wave 0 (gami-migrate-job.yaml's Job) to
   # report Healthy — which for a Job means Completed — before starting this
   # wave. This is what actually blocks the webapp rollout until migration
   # succeeds, replacing the PreSync-hook mechanism this used to rely on.
   # No nodeAffinity here anymore — staging's cluster has exactly one node,
   # so there's nothing to express a scheduling preference between.
-patches:
-- patch: |
-    apiVersion: v1
-    kind: ConfigMap
-    metadata:
-      name: gami-config
-      annotations:
-        argocd.argoproj.io/sync-wave: "-1"
-  target:
-    kind: ConfigMap
-    name: gami-config
-- patch: |
-    apiVersion: networking.k8s.io/v1
-    kind: Ingress
-    metadata:
+  #
+  # GPR_STORE_DIR + the matching volume are patched in here rather than in
+  # base/ so production doesn't inherit them (see gpr-store-pvc.yaml).
+  - target:
+      kind: Deployment
       name: gami-webapp
-      annotations:
-        cert-manager.io/cluster-issuer: letsencrypt-staging
-    spec:
-      tls:
-        - hosts:
-            - staging.authenticmemory.org
-            - verify-staging.authenticmemory.org
-          secretName: gami-webapp-tls
-      rules:
-        - host: staging.authenticmemory.org
-          http:
-            paths:
-              - path: /
-                pathType: Prefix
-                backend:
-                  service:
-                    name: gami-webapp
-                    port:
-                      number: 3000
-        - host: verify-staging.authenticmemory.org
-          http:
-            paths:
-              - path: /
-                pathType: Prefix
-                backend:
-                  service:
-                    name: gami-webapp
-                    port:
-                      number: 3000
-  target:
-    kind: Ingress
-    name: gami-webapp
-- patch: |
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: gami-webapp
-      annotations:
-        argocd.argoproj.io/sync-wave: "1"
-  target:
-    kind: Deployment
-    name: gami-webapp
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: gami-webapp
+        annotations:
+          argocd.argoproj.io/sync-wave: "1"
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gami-webapp
+                env:
+                  - name: GPR_STORE_DIR
+                    value: /var/lib/gami/gpr-store
+                volumeMounts:
+                  - name: gpr-store
+                    mountPath: /var/lib/gami/gpr-store
+            volumes:
+              - name: gpr-store
+                persistentVolumeClaim:
+                  claimName: gami-gpr-store

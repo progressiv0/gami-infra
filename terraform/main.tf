@@ -98,3 +98,27 @@ resource "hcloud_firewall_attachment" "argocd_link" {
   firewall_id = hcloud_firewall.argocd_link.id
   server_ids  = [data.hcloud_server.node["gami-prod"].id]
 }
+
+# The ArgoCD web UI/API. Traefik serves it on its own dedicated entrypoint
+# (see ansible/roles/argocd/files/traefik-argocd-entrypoint.yaml), kept off
+# 80/443 which are reserved for gami-webapp — and since servicelb is
+# disabled, the pinned NodePort 30443 is the actual reachable path, not the
+# entrypoint's own 8443. Restricted to admin_ip_cidr, same as SSH and the
+# k3s API: this is an admin login page, never public. Staging-only, because
+# that's the one node ArgoCD runs on — prod has no ArgoCD and nothing
+# listening on this port.
+resource "hcloud_firewall" "argocd_ui" {
+  name = "gami-argocd-ui-firewall"
+
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "30443"
+    source_ips = [var.admin_ip_cidr]
+  }
+}
+
+resource "hcloud_firewall_attachment" "argocd_ui" {
+  firewall_id = hcloud_firewall.argocd_ui.id
+  server_ids  = [data.hcloud_server.node["gami-staging"].id]
+}

@@ -1,0 +1,123 @@
+# Staging's Postgres — a plain, unmanaged Deployment, deliberately NOT
+# CloudNativePG. Staging needs no HA and no backup, so the operator would be
+# pure overhead; production is the only environment on CNPG (see
+# overlays/production/database/, which uses it for Barman/S3 backups and
+# point-in-time recovery). Because staging doesn't run CNPG, its cluster
+# doesn't install the CNPG operator at all — see
+# cluster-operators/apps-staging/.
+#
+# Contract with the app: gami-webapp and gami-migrate both read
+# `DATABASE_URL` from the `gami-postgres-app` Secret's `uri` key. With CNPG
+# that Secret is operator-generated; here it is NOT — it must be created and
+# sealed by hand, and it also supplies this container's own
+# POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB (envFrom below), so one sealed
+# Secret drives both sides and they cannot drift apart. See README-staging.md's
+# secrets section for the exact `kubeseal` invocation.
+#
+# The `uri` must point at the Service at the bottom of this file:
+#   postgresql://gami:<password>@gami-postgres:5432/gami?sslmode=disable
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gami-postgres
+  labels:
+    app: gami-postgres
+  annotations:
+    # Wave -1, ahead of gami-migrate-job.yaml (wave 0). ArgoCD only waits for
+    # health BETWEEN waves, so leaving Postgres in the default wave 0 puts it
+    # in the same batch as the migrate Job: the Job starts while initdb is
+    # still running, fails to connect, and burns through its backoffLimit in
+    # about a minute. Its PVC and Service sit in this wave too — a Deployment
+    # in an earlier wave than the PVC it mounts would deadlock.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the PVC is ReadWriteOnce on node-local
+  # storage, so a second pod could never attach it while the first still
+  # holds it — a rolling update would just deadlock.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gami-postgres
+  template:
+    metadata:
+      labels:
+        app: gami-postgres
+    spec:
+      containers:
+        - name: postgres
+          # Matches the app's own docker-compose.yml, so staging runs the
+          # same major version the app is developed against.
+          image: postgres:18-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: gami-postgres-app
+          volumeMounts:
+            # Postgres 18's official image moved PGDATA from
+            # /var/lib/postgresql/data into a version-scoped subdirectory
+            # (/var/lib/postgresql/18/docker), so the volume is mounted at the
+            # PARENT directory — mounting the old .../data path here would
+            # leave the real data directory on the container's ephemeral
+            # layer and silently re-run initdb on every restart. This mirrors
+            # the app's docker-compose.yml, which mounts /var/lib/postgresql
+            # for the same reason.
+            - name: data
+              mountPath: /var/lib/postgresql
+          # -d is explicit on purpose: without it libpq defaults the database
+          # name to the username, and the probe fails against a DB that was
+          # never created.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "gami", "-d", "gami"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "gami", "-d", "gami"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: gami-postgres-data
+---
+# Survives pod restarts, redeploys, and node reboots — the pod can be deleted
+# and rescheduled and it reattaches to the same data. It does NOT survive
+# losing the node itself: local-path is k3s's node-local provisioner (a
+# directory on this one box), and staging has no backup by design. Treat
+# staging data as reproducible, not precious.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gami-postgres-data
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 25Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gami-postgres
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  selector:
+    app: gami-postgres
+  ports:
+    - port: 5432
+      targetPort: postgres

@@ -2,12 +2,18 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Child Application manifests for staging's App-of-Apps parent
-# (argocd/app-cluster-operators-staging.yaml). No cnpg-barman-plugin here —
-# staging has no backup, so the plugin would be pure overhead. All three
-# entries are wave 0 (no dependencies between them); production's variant
-# additionally needs wave 1 for its Barman plugin — see
-# cluster-operators/apps-production/kustomization.yaml.
+# (argocd/app-cluster-operators-staging.yaml). Staging installs strictly less
+# than production — cert-manager is all it needs:
+#   - no cnpg — staging's Postgres is a plain Deployment
+#     (overlays/staging/postgres.yaml), so the operator and its CRDs would
+#     never be used.
+#   - no cnpg-barman-plugin — that's the backup tooling, and staging has no
+#     backup by design.
+#   - no sealed-secrets — staging's Secrets are generated on the cluster by
+#     Ansible's app_secrets role instead of being sealed into git, so there
+#     is no SealedSecret for a controller to decrypt. Production still needs
+#     it; see cluster-operators/apps-production/. If you ever add a
+#     SealedSecret to the staging overlay, add the controller back here first
+#     or it will simply never be decrypted.
 resources:
   - cert-manager.yaml
-  - cnpg.yaml
-  - sealed-secrets.yaml

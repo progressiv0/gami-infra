@@ -12,9 +12,11 @@
   delegate_to: "{{ prod_node }}"
   register: sa_create
   changed_when: "'created' in sa_create.stdout"
+  # Matches kubectl's human-readable message ('... already exists'), not the
+  # API's AlreadyExists StatusReason — kubectl create never prints the latter.
   failed_when: >
     sa_create.rc != 0 and
-    'AlreadyExists' not in sa_create.stderr
+    'already exists' not in sa_create.stderr
 
 - name: Grant argocd-manager cluster-admin on the prod cluster
   ansible.builtin.command:
@@ -26,7 +28,7 @@
   changed_when: "'created' in crb_create.stdout"
   failed_when: >
     crb_create.rc != 0 and
-    'AlreadyExists' not in crb_create.stderr
+    'already exists' not in crb_create.stderr
 
 # k3s 1.24+ no longer auto-creates a token Secret for every ServiceAccount
 # — it must be requested explicitly.

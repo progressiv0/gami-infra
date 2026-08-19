@@ -1,0 +1,74 @@
+---
+# Generates the app's runtime secrets directly on the cluster, so nothing has
+# to be sealed by hand and no credential ever enters git. Same out-of-band
+# pattern `ghcr-pull-secret` already uses (base/README-image-pull-secret.md);
+# production keeps using SealedSecrets instead, since CNPG generates its
+# database credentials and only NEXTAUTH_SECRET is left to manage there.
+#
+# ArgoCD will not touch or prune these: `prune: true` only removes resources
+# ArgoCD itself created (they carry its tracking annotation), and these carry
+# none. The overlay deliberately contains no Secret manifest for them.
+#
+# EVERY task here is create-if-missing, never apply/overwrite — regenerating
+# either value on a re-run would break a working environment:
+#   - POSTGRES_PASSWORD is only ever consumed by initdb on the Postgres
+#     container's FIRST start. Rotating it here would leave the database
+#     using the old password while the app connects with the new one.
+#   - Rotating NEXTAUTH_SECRET invalidates every active session and every
+#     outstanding magic-link.
+# Both are generated on the node itself, so the plaintext never transits the
+# Ansible controller.
+- name: Ensure the application namespace exists
+  ansible.builtin.command:
+    cmd: k3s kubectl create namespace {{ app_secrets_namespace }}
+  register: app_secrets_ns
+  changed_when: "'created' in app_secrets_ns.stdout"
+  failed_when: >
+    app_secrets_ns.rc != 0 and
+    'already exists' not in app_secrets_ns.stderr
+
+- name: Check whether the Postgres credentials Secret already exists
+  ansible.builtin.command:
+    cmd: k3s kubectl -n {{ app_secrets_namespace }} get secret gami-postgres-app
+  register: app_secrets_pg
+  changed_when: false
+  failed_when: false
+
+# One Secret drives both sides: the Postgres container initialises itself from
+# POSTGRES_* via envFrom, and gami-webapp/gami-migrate read `uri` via
+# secretKeyRef — so the password is written twice from the same shell variable
+# and the two copies cannot drift apart.
+- name: Generate the Postgres credentials Secret
+  ansible.builtin.shell: |
+    set -euo pipefail
+    USER={{ app_secrets_postgres_user }}
+    DB={{ app_secrets_postgres_db }}
+    HOST={{ app_secrets_postgres_service }}
+    PW="$(openssl rand -hex 24)"
+    URI="postgresql://${USER}:${PW}@${HOST}:5432/${DB}?sslmode=disable"
+    k3s kubectl -n {{ app_secrets_namespace }} create secret generic gami-postgres-app \
+      --from-literal=POSTGRES_USER="$USER" \
+      --from-literal=POSTGRES_PASSWORD="$PW" \
+      --from-literal=POSTGRES_DB="$DB" \
+      --from-literal=uri="$URI"
+  args:
+    executable: /bin/bash
+  when: app_secrets_pg.rc != 0
+  changed_when: true
+
+- name: Check whether the app Secret already exists
+  ansible.builtin.command:
+    cmd: k3s kubectl -n {{ app_secrets_namespace }} get secret gami-secrets
+  register: app_secrets_app
+  changed_when: false
+  failed_when: false
+
+- name: Generate the app Secret (NEXTAUTH_SECRET)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    k3s kubectl -n {{ app_secrets_namespace }} create secret generic gami-secrets \
+      --from-literal=NEXTAUTH_SECRET="$(openssl rand -hex 32)"
+  args:
+    executable: /bin/bash
+  when: app_secrets_app.rc != 0
+  changed_when: true

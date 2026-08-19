@@ -212,57 +212,49 @@ Once `gami-app`'s branches/images are ready:
 
 ## Deploying a production release
 
-Unlike staging, production deploys are meant to go through a **gated,
-auditable release process** — cutting a GitHub Release on the `gami-app`
-repo, not editing this repo's image tags directly by hand. (Per the design
-plan: "push to `main` never deploys; cutting a release does.") The intended
-flow, end to end:
+Production is **gated by a button**. Pushing to `gami-app`'s `main` branch
+only builds and publishes `ghcr.io/authenticmemory/gami-webapp:main-<short-sha>`
+— it never deploys. Promotion is a deliberate, separate action:
 
-1. **Cut a GitHub Release** on `authenticmemory/gami-app` (manual trigger).
-2. Its `release.yml` workflow builds the `gami-webapp` image, pushes it to
-   `ghcr.io/authenticmemory/gami-webapp` tagged with the release version,
-   plus a second `-migrate` tagged image (the builder stage with
-   npm/drizzle-kit/tsx — the runtime image is distroless and doesn't have
-   these tools).
-3. That same workflow checks out **this repo** (`gami-infra`) using a
-   scoped `INFRA_REPO_TOKEN`, runs `kustomize edit set image` inside
-   `overlays/production/webapp/`, commits, and pushes.
-4. ArgoCD (watching `overlays/production/webapp` via
-   `argocd/app-gami-production-webapp.yaml`, against the registered `prod`
-   cluster) detects the diff and syncs.
-5. `gami-migrate` (sync-wave `0`) runs to completion before `gami-webapp`
-   (sync-wave `1`) rolls out — plain `argocd.argoproj.io/sync-wave`
-   ordering, not a PreSync hook (see `base/gami-migrate-job.yaml`'s own
-   comment for why: an earlier PreSync-hook version of this Job could never
-   see `gami-config`, since hooks run in a phase that completes entirely
-   before any Sync-phase resource is even attempted).
-6. k3s performs a rolling update, one pod at a time, gated by the readiness
-   probe. `gami-webapp` runs a single replica on production's one node — no
-   podAntiAffinity, no node-spread; a pod crash gets Kubernetes' normal
-   restart, but losing the node itself takes production down until it's
-   back (see [README.md](README.md)'s "Node topology" section for why that
-   trade was made).
+1. Go to `gami-app` → **Actions** → **Deploy to production** → *Run workflow*.
+2. Leave **tag** empty to deploy the current HEAD of the selected branch, or
+   type an explicit tag (e.g. `main-a1b2c3d`) to deploy — or roll back to —
+   any earlier build.
+3. The workflow verifies the image actually exists in the registry, then
+   commits the tag into `overlays/production/webapp/` in this repo.
+4. ArgoCD (watching that path against the registered `prod` cluster) syncs it.
 
-**If `release.yml` doesn't exist yet in `gami-app`**, or you need to deploy
-manually as a one-off before that automation is wired up, do the equivalent
-by hand:
+The registry check in step 3 matters: without it, a typo'd or never-built tag
+would only surface as `ImagePullBackOff` on the prod cluster *after* ArgoCD
+had already rolled the Deployment forward.
 
+**Don't hand-edit the `images:` tag** in
+`overlays/production/webapp/kustomization.yaml` — the workflow owns it.
+
+**Rolling back** is the same button with an older tag. Every build is tagged
+`main-<short-sha>` and tags are never reused, so previously deployed images
+stay addressable indefinitely. That's the whole reason for unique tags rather
+than a moving `:main`.
+
+**On sync, ordering holds**: `gami-migrate` (sync-wave `0`) runs to completion
+before `gami-webapp` (sync-wave `1`) rolls out — plain
+`argocd.argoproj.io/sync-wave` ordering, not a PreSync hook (see
+`base/gami-migrate-job.yaml`'s own comment for why: an earlier PreSync-hook
+version of this Job could never see `gami-config`, since hooks run in a phase
+that completes entirely before any Sync-phase resource is even attempted).
+Migrations therefore re-run on every promotion, before the new pods serve.
+
+`gami-webapp` runs a single replica on production's one node — no
+podAntiAffinity, no node-spread; a pod crash gets Kubernetes' normal restart,
+but losing the node itself takes production down until it's back (see
+[README.md](README.md)'s "Node topology" section for why that trade was made).
+A single-replica rollout also means a brief gap while the old pod terminates
+and the new one passes its readiness probe — not zero-downtime.
+
+Confirm what is actually serving:
 ```bash
-cd gami-infra/overlays/production/webapp
-kustomize edit set image \
-  ghcr.io/authenticmemory/gami-webapp=ghcr.io/authenticmemory/gami-webapp:<release-tag> \
-  ghcr.io/authenticmemory/gami-webapp-migrate=ghcr.io/authenticmemory/gami-webapp:<release-tag>-migrate
-
-git add kustomization.yaml
-git commit -m "deploy: release <release-tag> to production"
-git push
+curl -s https://app.authenticmemory.org/api/version
 ```
-
-ArgoCD picks it up the same way either path.
-
-**Do not** treat a plain push to `main` (without a release tag) as a
-deploy signal for production — per the design intent, only a cut release
-should move production's image tags.
 
 ---
 
@@ -296,11 +288,15 @@ KUBECONFIG=<prod kubeconfig> kubectl get pods -n gami -o wide
 ```bash
 KUBECONFIG=<prod kubeconfig> kubectl rollout status deployment/gami-webapp -n gami
 ```
-Confirm zero downtime by hitting the health endpoint in a loop from another
-terminal while the rollout runs:
+Confirm zero downtime by polling `/api/version` from another terminal while
+the rollout runs — it also tells you exactly when the new build takes over,
+since it reports the baked-in `BUILD_SHA`:
 ```bash
-while true; do curl -s -o /dev/null -w "%{http_code}\n" https://app.authenticmemory.org/api/public/health; sleep 1; done
+while true; do curl -s https://app.authenticmemory.org/api/version; echo; sleep 1; done
 ```
+Note that a single-replica Deployment on a single node cannot actually roll
+over with zero downtime — expect a short gap while the old pod terminates
+and the new one passes its readiness probe.
 
 ---
 
@@ -341,10 +337,11 @@ not casually against live data:
   model is documented in
   [overlays/production/database/README-backup.md](overlays/production/database/README-backup.md)'s
   verification section and CNPG's own version-specific docs.
-- **Health probes actually gate traffic**: temporarily scale Postgres to 0
-  (or block its port) and confirm `/api/public/health` returns 503 and the
-  pod is marked `NotReady` — not just logging an error while still silently
-  receiving traffic.
+- **Probes**: `/api/version` is a static 200 and deliberately does **not**
+  touch Postgres, so a database outage will *not* mark the pod `NotReady` —
+  requests that need the DB fail individually instead of the whole pod being
+  pulled from service. That's the intended tradeoff (the app exposes no
+  health route); don't test for a 503 here, because there isn't one.
 
 ## Rotating a production secret
 

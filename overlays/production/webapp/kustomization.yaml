@@ -42,16 +42,19 @@ configMapGenerator:
       - SMTP_FROM_NAME=Authentic Memory
       - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
 
-# Tags here are placeholders — release.yml's `kustomize edit set image`
-# rewrites both on every published Release. gami-webapp-migrate is a
-# symbolic name (see base/gami-migrate-job.yaml) mapped onto the real
-# gami-webapp repo with a -migrate tag suffix.
+# Rewritten by the manual production deploy: pushing to gami-app's `main`
+# only BUILDS `main-<short-sha>`, it never deploys. Running the
+# "Deploy to production" workflow (workflow_dispatch — the button) commits
+# the chosen tag here, and ArgoCD syncs it. The tag below is only the
+# starting point; don't hand-edit it.
+#
+# Rollback is that same button with an older tag: tags are unique per build
+# and never reused, so any previously deployed image stays addressable. That
+# immutability is also why nothing sets imagePullPolicy: Always.
+# One entry covers both the Deployment and the migrate Job.
 images:
   - name: ghcr.io/authenticmemory/gami-webapp
-    newTag: latest
-  - name: ghcr.io/authenticmemory/gami-webapp-migrate
-    newName: ghcr.io/authenticmemory/gami-webapp
-    newTag: latest-migrate
+    newTag: main-bootstrap
 
 # No replicas override — base/'s own default (1) is correct here now.
 # Production's cluster has exactly one node, so podAntiAffinity-based
