@@ -6,9 +6,19 @@
 # when some OTHER sync operation places it into ordered waves; it's inert on
 # a standalone, directly-applied Application. Nesting under this parent is
 # what makes cert-manager/cnpg/sealed-secrets (wave 0) actually finish
-# syncing+healthy before the Barman plugin (wave 1) starts. Applied against
-# the registered remote "prod" cluster, not the local one ArgoCD itself
-# runs on.
+# syncing+healthy before the Barman plugin (wave 1) starts.
+#
+# destination is LOCAL (kubernetes.default.svc), not the registered remote
+# "prod" cluster — same as app-cluster-operators-staging.yaml. Application
+# is an ArgoCD CRD that exists only where ArgoCD itself is installed (i.e.
+# staging; see roles/argocd/defaults/main.yml). Prod's API server has no
+# such CRD, so pointing this parent's destination at "prod" fails with
+# "the server could not find the requested resource" / "Make sure the
+# Application CRD is installed on the destination cluster" (hit in
+# practice). The children don't need this parent to reach prod at all —
+# each child Application already carries its own destination.name: prod
+# (see cluster-operators/apps-production/*.yaml) and syncs itself there
+# independently once ArgoCD (running locally) creates it.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -21,7 +31,7 @@ spec:
     targetRevision: main
     path: cluster-operators/apps-production
   destination:
-    name: prod
+    server: https://kubernetes.default.svc
     namespace: argocd
   syncPolicy:
     automated:

@@ -9,12 +9,21 @@
     path: /usr/local/bin/k3s
   register: k3s_binary
 
+# --tls-san so a node with a private-network address (argocd_link_ip in
+# inventory/production.yml — today only gami-prod) issues its server
+# certificate with that IP in the SAN list. Without it, staging's ArgoCD
+# fails TLS verification connecting to prod over 10.10.0.3: Terraform
+# created that network AFTER k3s had already generated its certs from
+# whatever IPs existed at install time, and k3s never revisits the SAN
+# list on its own — only a flag change + restart regenerates it (see
+# tasks/main.yml's re-apply-tls-san.yml for doing this on an
+# already-installed node without a full reinstall).
 - name: Download and run the k3s install script (cluster-init)
   ansible.builtin.shell: |
     set -euo pipefail
     curl -sfL https://get.k3s.io | \
       INSTALL_K3S_VERSION={{ k3s_version }} \
-      INSTALL_K3S_EXEC="server --cluster-init --disable={{ k3s_disable | join(',') }} --node-label env={{ hostvars[inventory_hostname].hcloud_labels.env }}" \
+      INSTALL_K3S_EXEC="server --cluster-init --disable={{ k3s_disable | join(',') }} --node-label env={{ hostvars[inventory_hostname].hcloud_labels.env }}{{ ' --tls-san=' + hostvars[inventory_hostname].argocd_link_ip if hostvars[inventory_hostname].argocd_link_ip is defined else '' }}" \
       sh -
   args:
     executable: /bin/bash

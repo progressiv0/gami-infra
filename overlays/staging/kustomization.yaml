@@ -54,10 +54,17 @@ replicas:
   - name: gami-webapp
     count: 1
 
-# Staging gets its own hostnames and the Let's Encrypt STAGING ACME endpoint
-# (untrusted-but-functional certs — avoids burning production's rate limits
-# while iterating). See cluster-wide/cert-manager/cluster-issuers.yaml for
-# both ClusterIssuers.
+# Staging gets its own hostnames, and now the REAL Let's Encrypt endpoint —
+# letsencrypt-production, not letsencrypt-staging, so browsers actually trust
+# staging.authenticmemory.org. See cluster-wide/cert-manager/cluster-issuers.yaml
+# for both ClusterIssuers.
+#
+# The tradeoff this gives up: Let's Encrypt's rate limits are per REGISTERED
+# domain, so staging's certs now count against the same authenticmemory.org
+# budget production uses — 50 certs/week, and only 5 re-issues of an identical
+# hostname set per week. That is ample in steady state but easy to burn while
+# thrashing an Ingress or repeatedly deleting the tls Secret. If you ever hit
+# the limit, switch this back to letsencrypt-staging while iterating.
 patches:
   # gami-migrate-job.yaml (base/, sync-wave 0) reads this ConfigMap via
   # envFrom, so it needs to exist first — wave -1 guarantees that within
@@ -84,7 +91,7 @@ patches:
       metadata:
         name: gami-webapp
         annotations:
-          cert-manager.io/cluster-issuer: letsencrypt-staging
+          cert-manager.io/cluster-issuer: letsencrypt-production
       spec:
         tls:
           - hosts:

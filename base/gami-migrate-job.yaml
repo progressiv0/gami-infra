@@ -12,12 +12,18 @@
 # (wave 0, this file) → gami-webapp's Deployment (wave 1, patched per
 # overlay) — see overlays/*/kustomization.yaml.
 #
-# Without the PreSync hook, Replace=true (in each overlay's syncOptions) is
-# what makes repeated syncs of this fixed-name Job idempotent — Jobs are
-# immutable, so a plain `kubectl apply` on an already-completed
-# `gami-migrate` fails; `kubectl replace --force` (what Replace=true drives)
-# deletes and recreates it instead, mirroring the hook-delete-policy this
-# used to rely on.
+# Without the PreSync hook, Replace=true + Force=true is what makes repeated
+# syncs of this fixed-name Job idempotent — Jobs are immutable, so a plain
+# `kubectl apply` on an already-completed `gami-migrate` fails.
+#
+# BOTH options are required and they are not interchangeable: Replace=true
+# alone drives `kubectl replace`, which sends this manifest as-is and so
+# omits the server-generated spec.selector and the
+# batch.kubernetes.io/controller-uid label the live Job carries — the API
+# server then rejects it with "spec.selector: Required value" and "field is
+# immutable". Force=true adds --force, making it `kubectl replace --force`,
+# which deletes and recreates the Job instead, mirroring the
+# hook-delete-policy this used to rely on.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -25,9 +31,11 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "0"
     # Per-resource, not Application-wide: only this Job needs delete+recreate
-    # semantics (Jobs are immutable) — Replace=true elsewhere would be
-    # unnecessary and riskier (e.g. on the CNPG Cluster or Deployments).
-    argocd.argoproj.io/sync-options: Replace=true
+    # semantics (Jobs are immutable) — Replace/Force elsewhere would be
+    # unnecessary and riskier (e.g. on Deployments, where it turns a rolling
+    # update into a hard delete+recreate, and on PVCs, where it would destroy
+    # data).
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
 spec:
   backoffLimit: 3
   template:
