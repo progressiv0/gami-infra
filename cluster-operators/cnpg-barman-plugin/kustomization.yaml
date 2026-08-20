@@ -9,3 +9,4 @@
 # for the sync-wave ordering that guarantees this.
 resources:
   - https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.13.0/manifest.yaml
+  - restart-operator-hook.yaml

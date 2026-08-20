@@ -36,15 +36,11 @@ argocd_local_apps:
   - app-gami-cluster-wide-staging.yaml
   - app-gami-staging.yaml
 
-# "production-database" (not "production-webapp"): production's Postgres
-# (overlays/production/database/, single-instance CNPG + S3 backup) is
-# deployed now, ahead of its web app — the app's branches/images aren't
-# ready yet. app-gami-production-webapp.yaml is deliberately left out until
-# then; add it to this list once ready, no other change needed.
 argocd_remote_apps:
   - app-cluster-operators-production.yaml
   - app-gami-cluster-wide-production.yaml
   - app-gami-production-database.yaml
+  - app-gami-production-webapp.yaml
 
 # Dedicated Traefik entrypoint for the ArgoCD UI/API — kept off 80/443,
 # which are reserved for gami-webapp. Must match the port hardcoded in

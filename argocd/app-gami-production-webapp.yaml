@@ -1,9 +1,6 @@
-# Deliberately NOT yet added to ansible/roles/argocd/defaults/main.yml's
-# argocd_remote_apps list — this file exists so it's ready to go, but
-# gami-webapp/gami-migrate don't get deployed until the app itself is ready
-# (see overlays/production/database/'s own Application, which IS deployed
-# now). Bring this online later by adding "app-gami-production-webapp.yaml"
-# to that list — no other change needed at that point.
+# gami-webapp + gami-migrate for production, deployed via base/ (shared with
+# staging). Brought online after overlays/production/database/'s own
+# Application, which put Postgres up first.
 #
 # Applied against the registered remote "prod" cluster, not the local one
 # ArgoCD itself runs on (that's staging — see ansible/roles/argocd/tasks/
