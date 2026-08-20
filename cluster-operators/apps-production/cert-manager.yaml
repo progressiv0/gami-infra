@@ -6,10 +6,22 @@
 # is shared, cluster-agnostic — staging's copy of this Application
 # (apps-staging/cert-manager.yaml) references the exact same path, just
 # with a different destination.
+#
+# Name carries a -production suffix, unlike most other per-env Application
+# names in this repo, because it WOULD collide: both this Application object
+# and staging's cluster-operators-cert-manager live as Kubernetes objects in
+# the SAME namespace (argocd) on the SAME cluster (wherever ArgoCD itself
+# runs — staging; see roles/argocd/defaults/main.yml), regardless of which
+# remote cluster their own spec.destination deploys cert-manager's actual
+# resources to. Two Applications with the same (namespace, name) is a real
+# conflict, not a cosmetic one — hit in practice as sync errors that kept
+# shifting to a different resource each retry, traced to ArgoCD fighting
+# itself over one object as each parent's selfHeal reasserted its own
+# spec.destination.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: cluster-operators-cert-manager
+  name: cluster-operators-cert-manager-production
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "0"

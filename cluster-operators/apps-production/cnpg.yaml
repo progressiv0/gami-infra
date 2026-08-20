@@ -10,10 +10,17 @@
 # confirmed by hand (`kubectl apply` failed with "metadata.annotations: Too
 # long"). Without this option every sync of this Application fails the same
 # way.
+# -production suffix: this Application object lives in the argocd namespace
+# on the LOCAL cluster (wherever ArgoCD itself runs), not on "prod" — only
+# its own spec.destination below deploys there. staging currently has no
+# cnpg child (see apps-staging/kustomization.yaml), but if one is ever
+# added, an unsuffixed name here would collide with it — see
+# cert-manager.yaml's comment for the collision this exact pattern already
+# caused in practice.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: cluster-operators-cnpg
+  name: cluster-operators-cnpg-production
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "0"

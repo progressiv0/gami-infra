@@ -5,10 +5,14 @@
 # during install. Only in production's apps set — staging has no backup, so
 # this plugin would be pure overhead there. Applied against the registered
 # remote "prod" cluster.
+#
+# -production suffix for consistency with this directory's other children
+# (see cert-manager.yaml's comment) — production-only today so it can't
+# actually collide yet, but named the same way in case that ever changes.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: cluster-operators-cnpg-barman-plugin
+  name: cluster-operators-cnpg-barman-plugin-production
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "1"
