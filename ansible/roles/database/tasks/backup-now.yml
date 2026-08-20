@@ -1,0 +1,74 @@
+---
+# Triggers an on-demand CNPG base backup to S3, outside the nightly
+# ScheduledBackup — e.g. immediately before a risky migration.
+#
+# Production only: it needs the CNPG operator and the Barman Cloud plugin,
+# neither of which staging installs (staging has no backup by design — see
+# docs/database.md).
+- name: Require a CNPG target
+  ansible.builtin.assert:
+    that: database_kind == 'cnpg'
+    fail_msg: >-
+      backup-now only applies to a CloudNativePG cluster. Staging runs a
+      plain Postgres Deployment with no backup at all — use the db-dump
+      playbook there instead.
+
+- name: Resolve which Postgres to talk to
+  ansible.builtin.import_tasks: resolve-target.yml
+
+- name: Name this backup
+  ansible.builtin.set_fact:
+    database_backup_name: "{{ database_cnpg_cluster }}-manual-{{ ansible_date_time.iso8601_basic_short }}"
+
+- name: Render the Backup manifest
+  ansible.builtin.copy:
+    dest: "/tmp/{{ database_backup_name }}.yaml"
+    mode: "0600"
+    content: |
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Backup
+      metadata:
+        name: {{ database_backup_name }}
+        namespace: {{ database_namespace }}
+      spec:
+        cluster:
+          name: {{ database_cnpg_cluster }}
+        method: plugin
+        pluginConfiguration:
+          name: barman-cloud.cloudnative-pg.io
+
+- name: Create the Backup
+  ansible.builtin.command:
+    cmd: "k3s kubectl apply -f /tmp/{{ database_backup_name }}.yaml"
+  changed_when: true
+
+- name: Wait for the backup to complete
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl -n {{ database_namespace }} get backup {{ database_backup_name }}
+      -o jsonpath={.status.phase}
+  register: database_backup_phase
+  until: database_backup_phase.stdout in ['completed', 'failed']
+  retries: 60
+  delay: 10
+  changed_when: false
+
+- name: Clean up the manifest
+  ansible.builtin.file:
+    path: "/tmp/{{ database_backup_name }}.yaml"
+    state: absent
+
+- name: Fail if the backup did not complete
+  ansible.builtin.fail:
+    msg: >-
+      Backup {{ database_backup_name }} finished in phase
+      '{{ database_backup_phase.stdout }}'. Check
+      `k3s kubectl -n {{ database_namespace }} describe backup
+      {{ database_backup_name }}` — the usual causes are missing/incorrect
+      gami-postgres-backup-creds or the Barman plugin not being reachable
+      (see docs/troubleshooting.md).
+  when: database_backup_phase.stdout != 'completed'
+
+- name: Report the result
+  ansible.builtin.debug:
+    msg: "Backup {{ database_backup_name }} completed and is in S3."

@@ -1,0 +1,51 @@
+---
+# Which Postgres this run targets. The two environments run genuinely
+# different setups (see docs/database.md), so every playbook that uses this
+# role sets these explicitly rather than relying on a default that would be
+# wrong for one of them.
+#
+#   staging     database_kind: deployment  — plain postgres:18-alpine Deployment
+#   production  database_kind: cnpg        — CloudNativePG Cluster
+database_kind: deployment
+
+database_namespace: gami-staging
+database_name: gami
+
+# The role that owns the database (what dumps/restores run as).
+#
+# Differs per environment because the two images bootstrap differently: the
+# official postgres image makes POSTGRES_USER (gami) the superuser, while
+# CNPG keeps the conventional `postgres` superuser and creates `gami` as a
+# plain owner alongside it. Both connect over the local unix socket inside
+# the pod, where pg_hba trusts local connections — so no password is needed
+# for these operations even though the app itself authenticates normally.
+database_superuser: gami
+
+# Plain-Deployment target (database_kind: deployment).
+database_deployment: gami-postgres
+
+# CNPG target (database_kind: cnpg). The primary's pod name is read from the
+# Cluster's own .status.currentPrimary rather than guessed from a label,
+# which has changed spelling across CNPG versions (role= vs
+# cnpg.io/instanceRole=).
+database_cnpg_cluster: gami-postgres
+
+# Dumps are written here ON THE NODE first, then optionally fetched back to
+# the controller. Custom format (-Fc): compressed, and restorable
+# selectively with pg_restore.
+database_dump_dir: /var/backups/gami
+database_dump_name: "{{ database_name }}-{{ ansible_date_time.iso8601_basic_short | default('manual') }}.dump"
+
+# Fetch the dump back to the machine running Ansible, so it isn't only on
+# the node it came from.
+database_fetch_dump: true
+database_local_dump_dir: "{{ playbook_dir }}/../../dumps"
+
+# Restore only. Path to a dump file ON THE CONTROLLER — it gets copied to
+# the node, restored, then removed from the node again.
+database_restore_file: ""
+
+# Restore safety. The role refuses to run a restore unless this is passed
+# explicitly, because a restore is destructive and (on production) not
+# something to trigger by accident from a shell-history re-run.
+database_restore_confirm: false

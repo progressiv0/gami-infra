@@ -23,6 +23,11 @@ terraform/*_override.tf.json
 ansible/*.retry
 ansible/.vault_pass*
 
+# Database dumps fetched by playbooks/db-dump.yml — real application data,
+# never committed.
+dumps/
+*.dump
+
 # Editor / OS cruft
 .DS_Store
 *.swp

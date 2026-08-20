@@ -1,0 +1,11 @@
+---
+# This role is never used via `roles:` — every entry point is an explicit
+# action, invoked with `tasks_from:` by one of the db-*.yml playbooks, so
+# that including it can never perform a destructive operation implicitly.
+- name: Refuse to run without an explicit action
+  ansible.builtin.fail:
+    msg: >-
+      The database role has no default action. Use one of the playbooks in
+      ansible/playbooks/ — db-dump.yml, db-restore.yml, or db-backup.yml —
+      or include it with tasks_from: dump.yml / restore.yml / backup-now.yml.
+      See docs/database.md.

@@ -1,0 +1,22 @@
+---
+# Trigger an on-demand CNPG base backup to S3 and wait for it to complete.
+# Production only — staging has no backup by design.
+#
+#   ansible-playbook -i inventory/production.yml playbooks/db-backup.yml
+#
+# Use before a risky migration, or to prove the whole backup path (operator,
+# Barman plugin, credentials, bucket) actually works rather than waiting for
+# the 02:00 ScheduledBackup and hoping. See docs/database.md.
+- name: Trigger an on-demand production backup
+  hosts: env_prod
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Back up now
+      ansible.builtin.include_role:
+        name: database
+        tasks_from: backup-now.yml
+      vars:
+        database_kind: cnpg
+        database_namespace: gami
+        database_superuser: postgres

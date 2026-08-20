@@ -1,7 +1,7 @@
 ---
 # Generates the app's runtime secrets directly on the cluster, so nothing has
 # to be sealed by hand and no credential ever enters git. Same out-of-band
-# pattern `ghcr-pull-secret` already uses (base/README-image-pull-secret.md);
+# pattern `ghcr-pull-secret` already uses (docs/image-pull-secret.md);
 # production keeps using SealedSecrets instead, since CNPG generates its
 # database credentials and only NEXTAUTH_SECRET is left to manage there.
 #

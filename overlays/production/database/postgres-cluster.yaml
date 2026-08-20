@@ -25,7 +25,7 @@
 # Requires the CloudNativePG operator AND the Barman Cloud CNPG-I plugin
 # (`plugin-barman-cloud`) installed in the cluster — see the barmanObjectName
 # reference below and hetzner-postgres-backup-creds.yaml (Secret, created
-# out of band, never committed — see README-backup.md in this directory).
+# out of band, never committed — see docs/database.md).
 #
 # Deployed by its own ArgoCD Application (argocd/app-gami-production-database.yaml),
 # separate from gami-webapp/gami-migrate (../webapp/) — this lets the

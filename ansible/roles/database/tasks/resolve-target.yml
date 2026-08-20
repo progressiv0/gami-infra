@@ -1,0 +1,50 @@
+---
+# Resolves the `kubectl exec` target for whichever Postgres this environment
+# runs, so dump.yml/restore.yml don't each need to branch on it.
+#
+# Sets two facts:
+#   database_exec_target  — what to pass to `kubectl exec`
+#   database_exec_container — `-c <name>`, or empty for the plain Deployment
+- name: Find the CNPG primary pod
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl -n {{ database_namespace }}
+      get cluster {{ database_cnpg_cluster }}
+      -o jsonpath={.status.currentPrimary}
+  register: database_cnpg_primary
+  changed_when: false
+  when: database_kind == 'cnpg'
+
+- name: Fail when CNPG has no primary
+  ansible.builtin.fail:
+    msg: >-
+      Cluster {{ database_cnpg_cluster }} in {{ database_namespace }} reports
+      no current primary. It is still bootstrapping, or wedged — check
+      `k3s kubectl -n {{ database_namespace }} get cluster
+      {{ database_cnpg_cluster }}` before retrying. See docs/database.md.
+  when:
+    - database_kind == 'cnpg'
+    - database_cnpg_primary.stdout | trim | length == 0
+
+- name: Set the exec target (CNPG)
+  ansible.builtin.set_fact:
+    database_exec_target: "{{ database_cnpg_primary.stdout | trim }}"
+    # CNPG runs several containers in the instance pod; the Postgres binaries
+    # (pg_dump/pg_restore/psql) live in `postgres`.
+    database_exec_container: "-c postgres"
+  when: database_kind == 'cnpg'
+
+- name: Set the exec target (plain Deployment)
+  ansible.builtin.set_fact:
+    database_exec_target: "deploy/{{ database_deployment }}"
+    database_exec_container: ""
+  when: database_kind != 'cnpg'
+
+- name: Confirm Postgres answers before doing anything
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl -n {{ database_namespace }} exec {{ database_exec_target }}
+      {{ database_exec_container }} --
+      psql -U {{ database_superuser }} -d {{ database_name }} -tAc "select 1"
+  register: database_ping
+  changed_when: false

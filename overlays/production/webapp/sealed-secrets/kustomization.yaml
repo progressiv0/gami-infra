@@ -7,7 +7,7 @@ kind: Kustomization
 # over.
 #
 # gami-smtp.yaml not sealed yet — add it here once real SMTP credentials
-# are provided (see README-production.md's secrets bootstrap section).
+# are provided (see docs/production.md's Secrets section).
 #
 # No gami-signing-key.yaml — institution signing keys are per-institution
 # application data now (managed in Postgres, see gami-app's

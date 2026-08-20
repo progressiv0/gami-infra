@@ -1,0 +1,58 @@
+---
+# pg_dump of a single database, taken inside the Postgres pod and streamed
+# to a file on the node.
+#
+# Deliberately pg_dump, never pg_dumpall: pg_dumpall also dumps global
+# objects, which includes `ALTER ROLE ... PASSWORD '<hash>'` for every role.
+# Restoring that overwrites the target's password with the SOURCE system's,
+# leaving the app unable to authenticate with the credential in its own
+# Secret — a real incident on staging (2026-08-20), see docs/database.md's
+# "Why dumps break passwords".
+- name: Resolve which Postgres to talk to
+  ansible.builtin.import_tasks: resolve-target.yml
+
+- name: Ensure the dump directory exists on the node
+  ansible.builtin.file:
+    path: "{{ database_dump_dir }}"
+    state: directory
+    mode: "0700"
+
+# --no-owner/--no-privileges: the dump is portable between environments
+# whose role names differ, and won't fail on GRANTs referencing roles that
+# don't exist on the target.
+- name: Dump the database
+  ansible.builtin.shell: |
+    set -euo pipefail
+    k3s kubectl -n {{ database_namespace }} exec {{ database_exec_target }} {{ database_exec_container }} -- \
+      pg_dump -U {{ database_superuser }} -d {{ database_name }} \
+        --format=custom --no-owner --no-privileges \
+      > "{{ database_dump_dir }}/{{ database_dump_name }}"
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Check the dump is non-empty
+  ansible.builtin.stat:
+    path: "{{ database_dump_dir }}/{{ database_dump_name }}"
+  register: database_dump_stat
+
+- name: Fail on an empty dump
+  ansible.builtin.fail:
+    msg: >-
+      {{ database_dump_dir }}/{{ database_dump_name }} is empty — pg_dump
+      wrote nothing. Treat this as a failed backup, not a small database.
+  when: database_dump_stat.stat.size | default(0) == 0
+
+- name: Fetch the dump back to the controller
+  ansible.builtin.fetch:
+    src: "{{ database_dump_dir }}/{{ database_dump_name }}"
+    dest: "{{ database_local_dump_dir }}/"
+    flat: true
+  when: database_fetch_dump | bool
+
+- name: Report where the dump landed
+  ansible.builtin.debug:
+    msg: >-
+      Dumped {{ database_name }} ({{ database_dump_stat.stat.size }} bytes) to
+      {{ database_dump_dir }}/{{ database_dump_name }} on {{ inventory_hostname }}
+      {{ 'and fetched to ' ~ database_local_dump_dir if database_fetch_dump | bool else '(not fetched)' }}.

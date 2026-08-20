@@ -11,7 +11,7 @@
 # that Secret is operator-generated; here it is NOT — it must be created and
 # sealed by hand, and it also supplies this container's own
 # POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB (envFrom below), so one sealed
-# Secret drives both sides and they cannot drift apart. See README-staging.md's
+# Secret drives both sides and they cannot drift apart. See docs/database.md's
 # secrets section for the exact `kubeseal` invocation.
 #
 # The `uri` must point at the Service at the bottom of this file:

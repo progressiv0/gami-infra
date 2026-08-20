@@ -31,4 +31,4 @@ resources:
 # generated secret values), owned entirely by each overlay. See
 # overlays/{staging,production}/kustomization.yaml and Phase 3a of the plan.
 #
-# ghcr-pull-secret is also deliberately absent — see README-image-pull-secret.md.
+# ghcr-pull-secret is also deliberately absent — see docs/image-pull-secret.md.

@@ -1,0 +1,37 @@
+---
+# Take a pg_dump of one environment's database and fetch it back locally.
+#
+#   ansible-playbook -i inventory/production.yml playbooks/db-dump.yml --limit gami-staging
+#   ansible-playbook -i inventory/production.yml playbooks/db-restore.yml \
+#     --limit gami-staging -e database_restore_file=../dumps/gami-20260820.dump \
+#     -e database_restore_confirm=true
+#
+# --limit is required in practice: without it this runs against both nodes,
+# which is rarely what you want for a database operation. See
+# docs/database.md.
+- name: Dump the environment's Postgres database
+  hosts: k3s_server
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Dump (staging — plain Postgres Deployment)
+      ansible.builtin.include_role:
+        name: database
+        tasks_from: dump.yml
+      vars:
+        database_kind: deployment
+        database_namespace: gami-staging
+        database_superuser: gami
+      when: hostvars[inventory_hostname].hcloud_labels.env == 'staging'
+
+    - name: Dump (production — CloudNativePG)
+      ansible.builtin.include_role:
+        name: database
+        tasks_from: dump.yml
+      vars:
+        database_kind: cnpg
+        database_namespace: gami
+        # CNPG keeps the conventional `postgres` superuser; `gami` is only
+        # the database owner (see roles/database/defaults/main.yml).
+        database_superuser: postgres
+      when: hostvars[inventory_hostname].hcloud_labels.env == 'prod'

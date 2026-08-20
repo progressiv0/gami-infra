@@ -1,0 +1,101 @@
+---
+# Restores a pg_dump custom-format file into the target database.
+#
+# Destructive by nature, so this task file does three things before it
+# touches anything: refuses to run without an explicit confirm flag, checks
+# the dump exists locally, and takes its own safety dump first. That last
+# one is not ceremony — `pg_restore --clean` DROPs every object before
+# recreating it, so a restore that fails halfway leaves the database emptier
+# than it started (hit on staging, 2026-08-20; see docs/database.md).
+- name: Require explicit confirmation
+  ansible.builtin.assert:
+    that: database_restore_confirm | bool
+    fail_msg: >-
+      Refusing to restore without -e database_restore_confirm=true. This
+      DROPs and recreates every object in {{ database_name }} on
+      {{ inventory_hostname }}.
+
+- name: Require a dump file
+  ansible.builtin.assert:
+    that:
+      - database_restore_file | length > 0
+    fail_msg: "Pass -e database_restore_file=/path/to/dump on the controller."
+
+- name: Check the dump exists on the controller
+  ansible.builtin.stat:
+    path: "{{ database_restore_file }}"
+  delegate_to: localhost
+  become: false
+  register: database_restore_src
+
+- name: Fail on a missing or empty dump
+  ansible.builtin.fail:
+    msg: "{{ database_restore_file }} does not exist or is empty."
+  when: not database_restore_src.stat.exists or database_restore_src.stat.size == 0
+
+- name: Resolve which Postgres to talk to
+  ansible.builtin.import_tasks: resolve-target.yml
+
+# Safety net, always — the thing you'll want if the restore below goes wrong.
+- name: Take a safety dump of the current state first
+  ansible.builtin.include_tasks: dump.yml
+  vars:
+    database_dump_name: "{{ database_name }}-pre-restore-{{ ansible_date_time.iso8601_basic_short }}.dump"
+    database_fetch_dump: false
+
+- name: Copy the dump to the node
+  ansible.builtin.copy:
+    src: "{{ database_restore_file }}"
+    dest: "{{ database_dump_dir }}/restore-input.dump"
+    mode: "0600"
+
+# --clean --if-exists: drop existing objects before recreating them, without
+# erroring on ones that aren't there. --no-owner/--no-privileges: ignore the
+# source system's role names, which need not exist here.
+#
+# pg_restore exits non-zero on real failures but also warns noisily on
+# harmless ones, so the exit code is checked explicitly rather than trusting
+# an absence of output.
+- name: Restore the dump
+  ansible.builtin.shell: |
+    set -euo pipefail
+    k3s kubectl -n {{ database_namespace }} exec -i {{ database_exec_target }} {{ database_exec_container }} -- \
+      pg_restore -U {{ database_superuser }} -d {{ database_name }} \
+        --clean --if-exists --no-owner --no-privileges \
+      < "{{ database_dump_dir }}/restore-input.dump"
+  args:
+    executable: /bin/bash
+  register: database_restore_result
+  failed_when: database_restore_result.rc != 0
+  changed_when: true
+
+- name: Remove the copied dump from the node
+  ansible.builtin.file:
+    path: "{{ database_dump_dir }}/restore-input.dump"
+    state: absent
+
+- name: Confirm the restored database has tables
+  ansible.builtin.command:
+    cmd: >
+      k3s kubectl -n {{ database_namespace }} exec {{ database_exec_target }}
+      {{ database_exec_container }} --
+      psql -U {{ database_superuser }} -d {{ database_name }} -tAc
+      "select count(*) from information_schema.tables where table_schema='public'"
+  register: database_table_count
+  changed_when: false
+
+- name: Fail if the restore produced no tables
+  ansible.builtin.fail:
+    msg: >-
+      Restore completed but {{ database_name }} has no tables in the public
+      schema. The pre-restore safety dump is on {{ inventory_hostname }} in
+      {{ database_dump_dir }}.
+  when: database_table_count.stdout | trim | int == 0
+
+- name: Report the result
+  ansible.builtin.debug:
+    msg: >-
+      Restored {{ database_restore_file }} into {{ database_name }} on
+      {{ inventory_hostname }} — {{ database_table_count.stdout | trim }} tables
+      in the public schema. Restart the app so it reconnects, and see
+      docs/database.md if the app now reports an authentication failure.
