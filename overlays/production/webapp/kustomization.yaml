@@ -24,23 +24,21 @@ resources:
 generatorOptions:
   disableNameSuffixHash: true
 
-      # SMTP_* / BOOTSTRAP_OPERATOR_EMAIL: placeholders — set real values
-      # before the first real deploy.
 configMapGenerator:
-- literals:
-  - NODE_ENV=production
-  - CORS_ALLOWED_ORIGIN=https://app.authenticmemory.org
-  - APP_BASE_URL=https://app.authenticmemory.org
-  - NEXTAUTH_URL=https://app.authenticmemory.org
-  - SECURE_COOKIES=true
-  - AUTH_TRUST_HOST=true
-  - SMTP_HOST=smtp.example.com
-  - SMTP_PORT=587
-  - SMTP_SECURE=false
-  - SMTP_FROM=noreply@authenticmemory.org
-  - SMTP_FROM_NAME=Authentic Memory
-  - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
-  name: gami-config
+  - name: gami-config
+    literals:
+      - NODE_ENV=production
+      - CORS_ALLOWED_ORIGIN=https://app.authenticmemory.org
+      - APP_BASE_URL=https://app.authenticmemory.org
+      - NEXTAUTH_URL=https://app.authenticmemory.org
+      - SECURE_COOKIES=true
+      - AUTH_TRUST_HOST=true
+      - SMTP_HOST=smtp-relay.gmail.com
+      - SMTP_PORT=587
+      - SMTP_SECURE=false
+      - SMTP_FROM=noreply@authenticmemory.org
+      - SMTP_FROM_NAME=Authentic Memory
+      - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
 
 # Rewritten by the manual production deploy: pushing to gami-app's `main`
 # only BUILDS `main-<short-sha>`, it never deploys. Running the
