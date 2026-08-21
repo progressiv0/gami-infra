@@ -7,8 +7,8 @@ kind: Kustomization
 # directory/Application now. Deployed later, once the app itself is ready
 # (see argocd/app-gami-production-webapp.yaml's own comment).
 resources:
-  - ../../../base
-  - sealed-secrets
+- ../../../base
+- sealed-secrets
 
 # base/ already reflects production's hostnames (app.authenticmemory.org /
 # verify.authenticmemory.org) and cert-manager issuer (letsencrypt-production)
@@ -24,23 +24,23 @@ resources:
 generatorOptions:
   disableNameSuffixHash: true
 
-configMapGenerator:
-  - name: gami-config
-    literals:
-      - NODE_ENV=production
-      - CORS_ALLOWED_ORIGIN=https://app.authenticmemory.org
-      - APP_BASE_URL=https://app.authenticmemory.org
-      - NEXTAUTH_URL=https://app.authenticmemory.org
-      - SECURE_COOKIES=true
-      - AUTH_TRUST_HOST=true
       # SMTP_* / BOOTSTRAP_OPERATOR_EMAIL: placeholders — set real values
       # before the first real deploy.
-      - SMTP_HOST=smtp.example.com
-      - SMTP_PORT=587
-      - SMTP_SECURE=false
-      - SMTP_FROM=noreply@authenticmemory.org
-      - SMTP_FROM_NAME=Authentic Memory
-      - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
+configMapGenerator:
+- literals:
+  - NODE_ENV=production
+  - CORS_ALLOWED_ORIGIN=https://app.authenticmemory.org
+  - APP_BASE_URL=https://app.authenticmemory.org
+  - NEXTAUTH_URL=https://app.authenticmemory.org
+  - SECURE_COOKIES=true
+  - AUTH_TRUST_HOST=true
+  - SMTP_HOST=smtp.example.com
+  - SMTP_PORT=587
+  - SMTP_SECURE=false
+  - SMTP_FROM=noreply@authenticmemory.org
+  - SMTP_FROM_NAME=Authentic Memory
+  - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
+  name: gami-config
 
 # Rewritten by the manual production deploy: pushing to gami-app's `main`
 # only BUILDS `main-<short-sha>`, it never deploys. Running the
@@ -53,8 +53,9 @@ configMapGenerator:
 # immutability is also why nothing sets imagePullPolicy: Always.
 # One entry covers both the Deployment and the migrate Job.
 images:
-  - name: ghcr.io/authenticmemory/gami-webapp
-    newTag: main-bootstrap
+- name: ghcr.io/authenticmemory/gami-webapp
+  newName: ghcr.io/authenticmemory/gami-webapp
+  newTag: main-4f45072
 
 # No replicas override — base/'s own default (1) is correct here now.
 # Production's cluster has exactly one node, so podAntiAffinity-based
@@ -63,36 +64,36 @@ images:
 # zero-downtime failover. gami-app dropped the old Go backend service — see
 # README.md — so gami-webapp (Next.js) is the whole app now.
 
-patches:
   # gami-migrate-job.yaml (base/, sync-wave 0) reads this ConfigMap via
   # envFrom, so it needs to exist first — wave -1 guarantees that within
   # ArgoCD's normal Sync phase (see base/gami-migrate-job.yaml's comment for
   # why this is plain sync-wave ordering, not a PreSync hook: hooks run in a
   # separate phase that completes before ANY Sync-phase resource, including
   # this ConfigMap, is even attempted — confirmed against a real cluster).
-  - target:
-      kind: ConfigMap
-      name: gami-config
-    patch: |
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: gami-config
-        annotations:
-          argocd.argoproj.io/sync-wave: "-1"
   # sync-wave 1: ArgoCD waits for wave 0 (gami-migrate-job.yaml's Job) to
   # report Healthy — which for a Job means Completed — before starting this
   # wave. This is what actually blocks the webapp rollout until migration
   # succeeds, replacing the PreSync-hook mechanism this used to rely on.
   # No podAntiAffinity here anymore — production's cluster has exactly one
   # node, so there's nothing to spread across.
-  - target:
-      kind: Deployment
+patches:
+- patch: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: gami-config
+      annotations:
+        argocd.argoproj.io/sync-wave: "-1"
+  target:
+    kind: ConfigMap
+    name: gami-config
+- patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
       name: gami-webapp
-    patch: |
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: gami-webapp
-        annotations:
-          argocd.argoproj.io/sync-wave: "1"
+      annotations:
+        argocd.argoproj.io/sync-wave: "1"
+  target:
+    kind: Deployment
+    name: gami-webapp
