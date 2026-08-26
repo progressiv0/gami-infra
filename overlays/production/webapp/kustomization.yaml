@@ -25,20 +25,20 @@ generatorOptions:
   disableNameSuffixHash: true
 
 configMapGenerator:
-  - name: gami-config
-    literals:
-      - NODE_ENV=production
-      - CORS_ALLOWED_ORIGIN=https://app.authenticmemory.org
-      - APP_BASE_URL=https://app.authenticmemory.org
-      - NEXTAUTH_URL=https://app.authenticmemory.org
-      - SECURE_COOKIES=true
-      - AUTH_TRUST_HOST=true
-      - SMTP_HOST=smtp-relay.gmail.com
-      - SMTP_PORT=587
-      - SMTP_SECURE=false
-      - SMTP_FROM=noreply@authenticmemory.org
-      - SMTP_FROM_NAME=Authentic Memory
-      - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
+- literals:
+  - NODE_ENV=production
+  - CORS_ALLOWED_ORIGIN=https://app.authenticmemory.org
+  - APP_BASE_URL=https://app.authenticmemory.org
+  - NEXTAUTH_URL=https://app.authenticmemory.org
+  - SECURE_COOKIES=true
+  - AUTH_TRUST_HOST=true
+  - SMTP_HOST=smtp-relay.gmail.com
+  - SMTP_PORT=587
+  - SMTP_SECURE=false
+  - SMTP_FROM=noreply@authenticmemory.org
+  - SMTP_FROM_NAME=Authentic Memory
+  - BOOTSTRAP_OPERATOR_EMAIL=tech@authenticmemory.org
+  name: gami-config
 
 # Rewritten by the manual production deploy: pushing to gami-app's `main`
 # only BUILDS `main-<short-sha>`, it never deploys. Running the
@@ -53,7 +53,7 @@ configMapGenerator:
 images:
 - name: ghcr.io/authenticmemory/gami-webapp
   newName: ghcr.io/authenticmemory/gami-webapp
-  newTag: main-4f45072
+  newTag: main-b382138
 
 # No replicas override — base/'s own default (1) is correct here now.
 # Production's cluster has exactly one node, so podAntiAffinity-based
