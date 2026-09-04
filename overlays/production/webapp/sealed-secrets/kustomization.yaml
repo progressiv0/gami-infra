@@ -14,4 +14,3 @@ kind: Kustomization
 # src/lib/institution-keys.ts), not a single cluster-wide Secret.
 resources:
   - gami-secrets.yaml
-  - gami-smtp.yaml
