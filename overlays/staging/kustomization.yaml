@@ -49,7 +49,7 @@ configMapGenerator:
 images:
 - name: ghcr.io/authenticmemory/gami-webapp
   newName: ghcr.io/authenticmemory/gami-webapp
-  newTag: staging-e070043
+  newTag: staging-2ef63dc
 
 replicas:
 - count: 1
